@@ -12,8 +12,9 @@ import androidx.core.content.ContextCompat
 /**
  * Periodically calls takeScreenshot() (API 30+) roughly once per second while the
  * accessibility service is enabled. No classification or overlay wiring yet — this step just
- * proves the capture loop runs at the right cadence. Verify via:
- * `adb logcat -s ScreenCaptureService`
+ * proves the capture loop runs at the right cadence. Verify via `adb logcat -s
+ * ScreenCaptureService`, or in-app via [CaptureLog] (shown on the main screen once the
+ * service is enabled) if adb isn't available.
  */
 class ScreenCaptureService : AccessibilityService() {
 
@@ -52,6 +53,7 @@ class ScreenCaptureService : AccessibilityService() {
             object : TakeScreenshotCallback {
                 override fun onSuccess(result: ScreenshotResult) {
                     Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}")
+                    CaptureLog.record("captured")
                     result.hardwareBuffer.close()
                     scheduleNextCapture(CAPTURE_INTERVAL_MS)
                 }
@@ -59,9 +61,11 @@ class ScreenCaptureService : AccessibilityService() {
                 override fun onFailure(errorCode: Int) {
                     if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
                         Log.w(TAG, "Rate limited, backing off ${BACKOFF_MS}ms")
+                        CaptureLog.record("rate limited")
                         scheduleNextCapture(BACKOFF_MS)
                     } else {
                         Log.w(TAG, "Capture failed, errorCode=$errorCode")
+                        CaptureLog.record("failed ($errorCode)")
                         scheduleNextCapture(CAPTURE_INTERVAL_MS)
                     }
                 }

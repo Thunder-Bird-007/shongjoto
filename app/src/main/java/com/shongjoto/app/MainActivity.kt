@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.shongjoto.app.capture.CaptureLog
 import com.shongjoto.app.capture.ScreenCaptureService
 import com.shongjoto.app.overlay.OverlayService
 
@@ -94,7 +97,8 @@ private fun MainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(24.dp),
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -145,7 +149,7 @@ private fun MainScreen(
 
             Text(
                 text = if (isAccessibilityServiceEnabled) {
-                    "Accessibility service: ENABLED\n(check logcat for capture timestamps)"
+                    "Accessibility service: ENABLED"
                 } else {
                     "Enable the Shongjoto accessibility service to start the screenshot capture loop."
                 },
@@ -158,6 +162,31 @@ private fun MainScreen(
                     context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                 }) {
                     Text("Open accessibility settings")
+                }
+            } else {
+                val entries = CaptureLog.entries
+                if (entries.isEmpty()) {
+                    Text(
+                        text = "Waiting for the first capture…",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    Text(
+                        text = "Recent captures (newest first, interval since previous):",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    entries.forEachIndexed { index, entry ->
+                        val interval = if (index < entries.lastIndex) {
+                            "+${entry.timestampMs - entries[index + 1].timestampMs}ms"
+                        } else {
+                            "—"
+                        }
+                        Text(
+                            text = "${entry.outcome}  $interval",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
         }
