@@ -2,18 +2,18 @@ package com.shongjoto.app.overlay
 
 import android.content.Context
 import android.graphics.PixelFormat
-import android.os.Build
 import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 
 /**
- * Adds/removes a full-screen [TYPE_APPLICATION_OVERLAY] scrim over whatever app is in the
- * foreground. On API 31+ it also blurs the content behind the scrim via [FLAG_BLUR_BEHIND];
- * the scrim itself is the reliable part (works on every supported API level) and the blur is
- * a cosmetic layer on top of it, since cross-window blur isn't available below Android 12
- * and can be disabled system-wide (battery saver, "reduce transparency", etc).
+ * Adds/removes a full-screen, fully OPAQUE [TYPE_APPLICATION_OVERLAY] scrim over whatever
+ * app is in the foreground. Deliberately solid rather than a translucent "blur" look:
+ * Android has no API to read another app's window pixels to blur them, and the only real
+ * blur mechanism (FLAG_BLUR_BEHIND, API 31+) requires the window to stay translucent — which
+ * means some of the content underneath stays visible through it. Full opacity is what
+ * actually satisfies "hide this content," so that's the only mode here.
  */
 class BlurOverlayController(private val context: Context) {
 
@@ -23,11 +23,18 @@ class BlurOverlayController(private val context: Context) {
     val isShowing: Boolean
         get() = overlayView != null
 
-    fun show() {
+    /**
+     * @param onTap Debug-only escape hatch: tapping the overlay dismisses it. This goes away
+     * once the real disable flow (challenge activity) exists in a later step — a production
+     * overlay must not be dismissible by a single tap.
+     */
+    fun show(onTap: () -> Unit) {
         if (overlayView != null) return
 
         val view = View(context).apply {
             setBackgroundColor(SCRIM_COLOR)
+            isClickable = true
+            setOnClickListener { onTap() }
         }
 
         val params = WindowManager.LayoutParams(
@@ -35,17 +42,11 @@ class BlurOverlayController(private val context: Context) {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
+            PixelFormat.OPAQUE
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-                if (windowManager.isCrossWindowBlurEnabled) {
-                    flags = flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                    blurBehindRadius = blurRadiusPx()
-                }
-            }
+            // minSdk is 30, so LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS (API 28+) is always available.
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
 
         try {
@@ -70,14 +71,8 @@ class BlurOverlayController(private val context: Context) {
         }
     }
 
-    private fun blurRadiusPx(): Int =
-        (BLUR_BEHIND_RADIUS_DP * context.resources.displayMetrics.density).toInt()
-
     companion object {
         private const val TAG = "BlurOverlayController"
-
-        // Tunables — adjust once you can see the overlay on-device.
-        private const val SCRIM_COLOR = 0xE61B1B1F.toInt() // ~90% opaque dark scrim
-        private const val BLUR_BEHIND_RADIUS_DP = 60 // API 31+ only
+        private const val SCRIM_COLOR = 0xFF1B1B1F.toInt() // fully opaque — must never be < 0xFF
     }
 }

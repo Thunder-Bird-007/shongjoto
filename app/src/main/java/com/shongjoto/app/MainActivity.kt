@@ -33,6 +33,7 @@ import com.shongjoto.app.overlay.OverlayService
 class MainActivity : ComponentActivity() {
 
     private val hasOverlayPermission = mutableStateOf(false)
+    private val overlayShowing = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,7 +41,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MainScreen(hasOverlayPermission)
+                    MainScreen(hasOverlayPermission, overlayShowing)
                 }
             }
         }
@@ -51,14 +52,21 @@ class MainActivity : ComponentActivity() {
         // The overlay-permission settings screen doesn't return a reliable result code,
         // so just recheck whenever the app comes back to the foreground.
         hasOverlayPermission.value = Settings.canDrawOverlays(this)
+        // If this activity is visible and interactive again, the overlay can't still be
+        // showing (it would be covering this screen) — resync in case it was dismissed
+        // by the debug tap-to-dismiss or auto-timeout rather than the switch itself.
+        overlayShowing.value = false
     }
 }
 
 @Composable
-private fun MainScreen(hasOverlayPermissionState: MutableState<Boolean>) {
+private fun MainScreen(
+    hasOverlayPermissionState: MutableState<Boolean>,
+    overlayShowingState: MutableState<Boolean>
+) {
     val context = LocalContext.current
     val hasOverlayPermission by hasOverlayPermissionState
-    var overlayShowing by remember { mutableStateOf(false) }
+    var overlayShowing by overlayShowingState
 
     Scaffold { innerPadding ->
         Column(
