@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Shongjoto</string>
+    <string name="accessibility_service_description">Lets Shongjoto periodically capture the screen on-device to detect and blur explicit content. Nothing leaves this device.</string>
 </resources>
