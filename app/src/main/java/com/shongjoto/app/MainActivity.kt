@@ -27,7 +27,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -35,12 +34,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.shongjoto.app.capture.CaptureLog
 import com.shongjoto.app.capture.ScreenCaptureService
+import com.shongjoto.app.overlay.DebugOverlayState
 import com.shongjoto.app.overlay.OverlayService
 
 class MainActivity : ComponentActivity() {
 
     private val hasOverlayPermission = mutableStateOf(false)
-    private val overlayShowing = mutableStateOf(false)
     private val isAccessibilityServiceEnabled = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,7 +48,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MainScreen(hasOverlayPermission, overlayShowing, isAccessibilityServiceEnabled)
+                    MainScreen(hasOverlayPermission, isAccessibilityServiceEnabled)
                 }
             }
         }
@@ -59,14 +58,12 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Neither the overlay-permission nor the accessibility-settings screens return a
         // reliable result code, so just recheck both whenever the app comes back to the
-        // foreground.
+        // foreground. (The debug overlay switch doesn't need a resync here — it reads
+        // DebugOverlayState directly, which OverlayService keeps accurate regardless of how
+        // the overlay was dismissed.)
         hasOverlayPermission.value = Settings.canDrawOverlays(this)
         isAccessibilityServiceEnabled.value =
             isAccessibilityServiceEnabled(this, ScreenCaptureService::class.java)
-        // If this activity is visible and interactive again, the overlay can't still be
-        // showing (it would be covering this screen) — resync in case it was dismissed
-        // by the debug tap-to-dismiss or auto-timeout rather than the switch itself.
-        overlayShowing.value = false
     }
 }
 
@@ -84,12 +81,11 @@ private fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<
 @Composable
 private fun MainScreen(
     hasOverlayPermissionState: MutableState<Boolean>,
-    overlayShowingState: MutableState<Boolean>,
     isAccessibilityServiceEnabledState: MutableState<Boolean>
 ) {
     val context = LocalContext.current
     val hasOverlayPermission by hasOverlayPermissionState
-    var overlayShowing by overlayShowingState
+    val overlayShowing by DebugOverlayState.isShowing
     val isAccessibilityServiceEnabled by isAccessibilityServiceEnabledState
 
     Scaffold { innerPadding ->
@@ -134,7 +130,9 @@ private fun MainScreen(
                 Switch(
                     checked = overlayShowing,
                     onCheckedChange = { checked ->
-                        overlayShowing = checked
+                        // Don't set DebugOverlayState here — OverlayService is the single
+                        // source of truth for it, updated on every real show/hide regardless
+                        // of trigger (switch, tap-to-dismiss, or auto-timeout).
                         val serviceIntent = Intent(context, OverlayService::class.java)
                         if (checked) {
                             context.startService(serviceIntent)

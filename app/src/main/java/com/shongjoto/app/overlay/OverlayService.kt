@@ -8,7 +8,9 @@ import android.os.Looper
 
 /**
  * Owns the blur overlay's lifetime. Starting this service shows the overlay; stopping it
- * (or the service getting destroyed for any other reason) hides it.
+ * (or the service getting destroyed for any other reason) hides it. Updates
+ * [DebugOverlayState] on every show/hide so MainActivity's switch always reflects the real
+ * state, regardless of how the overlay was dismissed.
  *
  * Debug-only safety nets while there's no real disable flow yet: tapping the overlay
  * dismisses it, and it auto-clears after [AUTO_DISMISS_MS] no matter what. Both go away once
@@ -27,6 +29,7 @@ class OverlayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         overlayController.show(onTap = { stopSelf() })
+        DebugOverlayState.isShowing.value = true
         handler.postDelayed(autoDismissRunnable, AUTO_DISMISS_MS)
         return START_NOT_STICKY
     }
@@ -34,6 +37,7 @@ class OverlayService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(autoDismissRunnable)
         overlayController.hide()
+        DebugOverlayState.isShowing.value = false
         super.onDestroy()
     }
 
