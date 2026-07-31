@@ -39,7 +39,10 @@ class AutoBlurController(private val overlay: BlurOverlayController) {
 
     companion object {
         // Tunables.
-        const val EXPLICIT_THRESHOLD = 0.7f
+        // 0.35 based on real on-device calibration: ordinary content read ~0.05-0.08, real
+        // nudity read a sustained 0.424 — 0.7 never would have triggered on that sample.
+        // Keep tuning as more real content gets tested.
+        const val EXPLICIT_THRESHOLD = 0.35f
         const val CONSECUTIVE_CLEAN_READS_REQUIRED = 2
     }
 }
