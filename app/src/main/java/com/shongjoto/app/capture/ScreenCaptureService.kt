@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
@@ -107,15 +108,17 @@ class ScreenCaptureService : AccessibilityService() {
         }
 
         classificationExecutor.execute {
-            val classification = classifier.classify(softwareBitmap)
+            val startMs = SystemClock.elapsedRealtime()
+            val classification = classifier.classifyTiled(softwareBitmap)
+            val elapsedMs = SystemClock.elapsedRealtime() - startMs
             softwareBitmap.recycle()
             val confidenceText = "%.3f".format(classification.explicitConfidence)
             handler.post {
                 // show()/hide() go through WindowManager and must run on a Looper thread.
                 autoBlurController.onClassification(classification.explicitConfidence)
                 val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
-                Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, explicit=$confidenceText, $blurState")
-                CaptureLog.record("captured (explicit=$confidenceText) [$blurState]")
+                Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, explicit=$confidenceText, ${elapsedMs}ms, $blurState")
+                CaptureLog.record("captured (explicit=$confidenceText, ${elapsedMs}ms) [$blurState]")
             }
         }
     }
