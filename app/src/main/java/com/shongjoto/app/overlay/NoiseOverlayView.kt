@@ -6,9 +6,7 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.RenderEffect
 import android.graphics.Shader
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -16,10 +14,15 @@ import kotlin.random.Random
 
 /**
  * Draws animated, fully-opaque coarse color-block "static" instead of a flat color — reads as
- * a corrupted/distorted/hazy image rather than a plain black screen, while every pixel stays
- * 100% opaque so the real content underneath is never visible, same guarantee as the flat
- * scrim it replaces. On API 31+ a soft blur is layered on top of our own rendered noise (not
- * the content behind the window — that's never read) to soften the block edges further.
+ * a corrupted/distorted image rather than a plain black screen, while every pixel stays 100%
+ * opaque so the real content underneath is never visible, same guarantee as the flat scrim it
+ * replaces.
+ *
+ * Deliberately does NOT use RenderEffect/blur here: applying a real blur effect to this view
+ * caused the window to render translucent, letting the actual screen content show through
+ * underneath the noise — confirmed on-device. Whatever visual polish that would add isn't
+ * worth risking the one guarantee this view exists for, so only plain, fully-opaque pixel
+ * drawing is used.
  */
 class NoiseOverlayView(context: Context) : View(context) {
 
@@ -28,9 +31,6 @@ class NoiseOverlayView(context: Context) : View(context) {
     private val regenerateRunnable = Runnable { regenerateNoise() }
 
     init {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            setRenderEffect(RenderEffect.createBlurEffect(BLUR_RADIUS_PX, BLUR_RADIUS_PX, Shader.TileMode.CLAMP))
-        }
         regenerateNoise()
     }
 
@@ -68,12 +68,11 @@ class NoiseOverlayView(context: Context) : View(context) {
 
     companion object {
         // Tunables.
-        // Bigger CELL_SIZE_PX = chunkier/blurrier-looking mosaic. Smaller GRID_CELLS = fewer,
-        // larger blocks per tile. Shorter REFRESH_INTERVAL_MS = more "alive" but marginally
-        // more CPU to regenerate.
+        // Bigger CELL_SIZE_PX = chunkier-looking mosaic. Smaller GRID_CELLS = fewer, larger
+        // blocks per tile. Shorter REFRESH_INTERVAL_MS = more "alive" but marginally more CPU
+        // to regenerate.
         private const val GRID_CELLS = 16
         private const val CELL_SIZE_PX = 40
         private const val REFRESH_INTERVAL_MS = 150L
-        private const val BLUR_RADIUS_PX = 60f
     }
 }

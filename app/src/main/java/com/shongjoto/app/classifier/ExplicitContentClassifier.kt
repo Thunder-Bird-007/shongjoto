@@ -41,6 +41,13 @@ class ExplicitContentClassifier(context: Context) {
      * busy screen (e.g. one image in a feed) can shrink below what the model can detect —
      * classifying tiles too catches that, while the whole-frame pass still catches content
      * that a tile boundary might otherwise cut awkwardly in half.
+     *
+     * A tile's result only overrides the full frame's if it clears [TILE_CONFIDENCE_FLOOR], a
+     * stricter bar than the main threshold: a cropped tile has no surrounding context (just a
+     * patch of skin, a collar, odd lighting), so it's inherently noisier than a full frame —
+     * on-device testing showed ordinary tiles (a talking-head video, cropped photos in a feed)
+     * occasionally reading above the main threshold on their own. The full frame's threshold
+     * was validated against real content directly; tiles need more margin before being trusted.
      */
     fun classifyTiled(bitmap: Bitmap): ClassificationResult {
         var best = classify(bitmap)
@@ -60,7 +67,9 @@ class ExplicitContentClassifier(context: Context) {
                 val result = classify(tile)
                 tile.recycle()
 
-                if (result.explicitConfidence > best.explicitConfidence) {
+                if (result.explicitConfidence > best.explicitConfidence &&
+                    result.explicitConfidence >= TILE_CONFIDENCE_FLOOR
+                ) {
                     best = result
                 }
             }
@@ -123,5 +132,10 @@ class ExplicitContentClassifier(context: Context) {
         // more inference time per capture (GRID_COLS * GRID_ROWS + 1 total runs).
         private const val GRID_COLS = 2
         private const val GRID_ROWS = 3
+
+        // Minimum confidence for a tile's result to be trusted over the full frame's — higher
+        // than AutoBlurController's main threshold since a cropped tile is noisier. Tune this
+        // (not the main threshold) if tile-driven false positives keep showing up.
+        private const val TILE_CONFIDENCE_FLOOR = 0.6f
     }
 }
