@@ -33,6 +33,11 @@ android {
         compose = true
     }
 
+    androidResources {
+        // TFLite loads the model via mmap; it must stay uncompressed in the APK.
+        noCompress += "tflite"
+    }
+
     kotlin {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_17)
@@ -50,4 +55,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
     implementation("androidx.activity:activity-compose:1.13.0")
+
+    implementation("com.google.ai.edge.litert:litert:2.1.6")
 }
