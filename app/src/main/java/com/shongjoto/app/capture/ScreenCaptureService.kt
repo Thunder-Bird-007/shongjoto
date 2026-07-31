@@ -66,17 +66,39 @@ class ScreenCaptureService : AccessibilityService() {
     }
 
     private fun captureFrame() {
+        val wasBlurredBeforeCapture = overlayController.isShowing
+        if (wasBlurredBeforeCapture) {
+            // takeScreenshot() captures the whole composited display, including our own
+            // overlay — if we don't hide it first, we just photograph our own black screen,
+            // which always reads as "clean" and causes an endless show/hide loop. Give the
+            // compositor a couple of frames to actually settle before capturing.
+            overlayController.hide()
+            handler.postDelayed({ requestScreenshot(wasBlurredBeforeCapture = true) }, HIDE_SETTLE_DELAY_MS)
+        } else {
+            requestScreenshot(wasBlurredBeforeCapture = false)
+        }
+    }
+
+    private fun requestScreenshot(wasBlurredBeforeCapture: Boolean) {
         takeScreenshot(
             Display.DEFAULT_DISPLAY,
             ContextCompat.getMainExecutor(this),
             object : TakeScreenshotCallback {
                 override fun onSuccess(result: ScreenshotResult) {
+                    if (wasBlurredBeforeCapture) {
+                        // Re-cover immediately, before classification runs, to minimize how
+                        // long the real content is exposed.
+                        overlayController.show(touchable = false)
+                    }
                     // Reschedule immediately — classification latency must not affect cadence.
                     scheduleNextCapture(CAPTURE_INTERVAL_MS)
-                    classifyAndLog(result)
+                    classifyAndLog(result, wasBlurredBeforeCapture)
                 }
 
                 override fun onFailure(errorCode: Int) {
+                    if (wasBlurredBeforeCapture) {
+                        overlayController.show(touchable = false)
+                    }
                     if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
                         Log.w(TAG, "Rate limited, backing off ${BACKOFF_MS}ms")
                         CaptureLog.record("rate limited")
@@ -95,7 +117,7 @@ class ScreenCaptureService : AccessibilityService() {
      * Converts the hardware-backed screenshot to a software Bitmap and classifies it off the
      * main thread, then logs the result back on the main thread.
      */
-    private fun classifyAndLog(result: ScreenshotResult) {
+    private fun classifyAndLog(result: ScreenshotResult, wasBlurredBeforeCapture: Boolean) {
         val hardwareBitmap = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
         val softwareBitmap = hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
         hardwareBitmap?.recycle()
@@ -113,12 +135,14 @@ class ScreenCaptureService : AccessibilityService() {
             val elapsedMs = SystemClock.elapsedRealtime() - startMs
             softwareBitmap.recycle()
             val confidenceText = "%.3f".format(classification.explicitConfidence)
+            val peekTag = if (wasBlurredBeforeCapture) "peek, " else ""
             handler.post {
                 // show()/hide() go through WindowManager and must run on a Looper thread.
                 autoBlurController.onClassification(classification.explicitConfidence)
                 val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
-                Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, explicit=$confidenceText, ${elapsedMs}ms, $blurState")
-                CaptureLog.record("captured (explicit=$confidenceText, ${elapsedMs}ms) [$blurState]")
+                Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, $peekTag" +
+                    "explicit=$confidenceText, ${elapsedMs}ms, $blurState")
+                CaptureLog.record("captured ($peekTag" + "explicit=$confidenceText, ${elapsedMs}ms) [$blurState]")
             }
         }
     }
@@ -129,5 +153,6 @@ class ScreenCaptureService : AccessibilityService() {
         // Tunables.
         private const val CAPTURE_INTERVAL_MS = 1000L
         private const val BACKOFF_MS = 2000L
+        private const val HIDE_SETTLE_DELAY_MS = 50L
     }
 }
