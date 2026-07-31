@@ -8,12 +8,13 @@ import android.view.View
 import android.view.WindowManager
 
 /**
- * Adds/removes a full-screen, fully OPAQUE [TYPE_APPLICATION_OVERLAY] scrim over whatever
- * app is in the foreground. Deliberately solid rather than a translucent "blur" look:
- * Android has no API to read another app's window pixels to blur them, and the only real
+ * Adds/removes a full-screen, fully OPAQUE [TYPE_APPLICATION_OVERLAY] over whatever app is in
+ * the foreground, rendering [NoiseOverlayView] (animated grain/static) rather than an actual
+ * blur: Android has no API to read another app's window pixels to blur them, and the only real
  * blur mechanism (FLAG_BLUR_BEHIND, API 31+) requires the window to stay translucent — which
- * means some of the content underneath stays visible through it. Full opacity is what
- * actually satisfies "hide this content," so that's the only mode here.
+ * means some of the content underneath stays visible through it. Every pixel of the noise
+ * texture is fully opaque, so this still fully hides content; it just looks like corrupted
+ * static instead of a flat color.
  */
 class BlurOverlayController(private val context: Context) {
 
@@ -35,8 +36,7 @@ class BlurOverlayController(private val context: Context) {
     fun show(touchable: Boolean = true, onTap: (() -> Unit)? = null) {
         if (overlayView != null) return
 
-        val view = View(context).apply {
-            setBackgroundColor(SCRIM_COLOR)
+        val view = NoiseOverlayView(context).apply {
             if (touchable && onTap != null) {
                 isClickable = true
                 setOnClickListener { onTap() }
@@ -84,6 +84,5 @@ class BlurOverlayController(private val context: Context) {
 
     companion object {
         private const val TAG = "BlurOverlayController"
-        private const val SCRIM_COLOR = 0xFF1B1B1F.toInt() // fully opaque — must never be < 0xFF
     }
 }
