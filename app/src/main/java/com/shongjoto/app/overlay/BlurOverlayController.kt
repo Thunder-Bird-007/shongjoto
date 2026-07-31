@@ -24,24 +24,35 @@ class BlurOverlayController(private val context: Context) {
         get() = overlayView != null
 
     /**
-     * @param onTap Debug-only escape hatch: tapping the overlay dismisses it. This goes away
-     * once the real disable flow (challenge activity) exists in a later step — a production
-     * overlay must not be dismissible by a single tap.
+     * @param touchable When true, the overlay itself intercepts touches (and [onTap], if set,
+     * fires on tap) — used by the manual debug toggle, which has no classifier driving it and
+     * needs its own tap-to-dismiss escape hatch. When false, touches pass straight through to
+     * whatever's underneath: the user can still scroll/navigate blindly while blurred, which is
+     * what actually lets them get away from content and let the auto-deblur logic clear it —
+     * this is the mode the real classifier-driven overlay uses.
+     * @param onTap Only used when [touchable] is true.
      */
-    fun show(onTap: () -> Unit) {
+    fun show(touchable: Boolean = true, onTap: (() -> Unit)? = null) {
         if (overlayView != null) return
 
         val view = View(context).apply {
             setBackgroundColor(SCRIM_COLOR)
-            isClickable = true
-            setOnClickListener { onTap() }
+            if (touchable && onTap != null) {
+                isClickable = true
+                setOnClickListener { onTap() }
+            }
+        }
+
+        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        if (!touchable) {
+            flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            flags,
             PixelFormat.OPAQUE
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -52,7 +63,7 @@ class BlurOverlayController(private val context: Context) {
         try {
             windowManager.addView(view, params)
             overlayView = view
-            Log.d(TAG, "Overlay shown")
+            Log.d(TAG, "Overlay shown (touchable=$touchable)")
         } catch (e: Exception) {
             // Most likely SYSTEM_ALERT_WINDOW was revoked after the caller checked it.
             Log.e(TAG, "Failed to add overlay view", e)

@@ -10,6 +10,7 @@ import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.shongjoto.app.classifier.ExplicitContentClassifier
+import com.shongjoto.app.overlay.BlurOverlayController
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -17,9 +18,10 @@ import java.util.concurrent.Executors
  * Periodically calls takeScreenshot() (API 30+) roughly once per second while the
  * accessibility service is enabled, then classifies each frame with
  * [ExplicitContentClassifier] off the main thread. Capture scheduling never waits on
- * classification — the ~1s cadence is independent of how long inference takes. No overlay
- * wiring yet; this step just logs confidence scores (via [CaptureLog], shown on the main
- * screen) so the classifier can be sanity-checked before it drives anything.
+ * classification — the ~1s cadence is independent of how long inference takes.
+ * [AutoBlurController] turns each result into show/hide decisions on its own
+ * [BlurOverlayController] instance (separate from the manual debug toggle's). Results also log
+ * through [CaptureLog], shown on the main screen, for sanity-checking.
  */
 class ScreenCaptureService : AccessibilityService() {
 
@@ -27,11 +29,15 @@ class ScreenCaptureService : AccessibilityService() {
     private val captureRunnable = Runnable { captureFrame() }
     private lateinit var classifier: ExplicitContentClassifier
     private lateinit var classificationExecutor: ExecutorService
+    private lateinit var overlayController: BlurOverlayController
+    private lateinit var autoBlurController: AutoBlurController
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         classifier = ExplicitContentClassifier(this)
         classificationExecutor = Executors.newSingleThreadExecutor()
+        overlayController = BlurOverlayController(this)
+        autoBlurController = AutoBlurController(overlayController)
         Log.d(TAG, "Service connected, starting capture loop")
         scheduleNextCapture(0L)
     }
@@ -48,6 +54,7 @@ class ScreenCaptureService : AccessibilityService() {
         handler.removeCallbacks(captureRunnable)
         classificationExecutor.shutdownNow()
         classifier.close()
+        overlayController.hide()
         Log.d(TAG, "Service unbound, capture loop stopped")
         return super.onUnbind(intent)
     }
@@ -104,8 +111,11 @@ class ScreenCaptureService : AccessibilityService() {
             softwareBitmap.recycle()
             val confidenceText = "%.3f".format(classification.explicitConfidence)
             handler.post {
-                Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, explicit=$confidenceText")
-                CaptureLog.record("captured (explicit=$confidenceText)")
+                // show()/hide() go through WindowManager and must run on a Looper thread.
+                autoBlurController.onClassification(classification.explicitConfidence)
+                val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
+                Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, explicit=$confidenceText, $blurState")
+                CaptureLog.record("captured (explicit=$confidenceText) [$blurState]")
             }
         }
     }
