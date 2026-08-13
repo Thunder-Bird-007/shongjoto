@@ -1,6 +1,6 @@
 package com.shongjoto.app.capture
 
-import com.shongjoto.app.classifier.ClassificationResult
+import com.shongjoto.app.classifier.FrameReading
 import com.shongjoto.app.overlay.BlurSurface
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -34,7 +34,7 @@ class AutoBlurControllerTest {
             listOf(0.05f, 0.12f, 0.08f, 0.20f, 0.15f, 0.30f, 0.10f, 0.25f, 0.18f, 0.09f)
         repeat(4) {
             for (sexy in noisySexyReadings) {
-                controller.onClassification(classification(sexy = sexy))
+                controller.onClassification(reading(sexy = sexy))
             }
         }
         assertFalse(surface.isShowing)
@@ -44,12 +44,12 @@ class AutoBlurControllerTest {
     @Test
     fun `oscillating score around the old single 0_35 threshold no longer flickers`() {
         // Regression test for the flicker bug: the old code compared one smoothed value
-        // directly to a single 0.35 threshold, so this exact sequence used to trip the overlay
-        // by its 3rd reading. With per-signal hysteresis (ON=0.50 for strong) and a dead zone,
-        // none of these readings are ever mistaken for sustained explicit content.
-        val bouncing = listOf(0.30f, 0.45f, 0.35f, 0.50f, 0.32f, 0.48f, 0.38f, 0.44f)
+        // directly to a single 0.35 threshold, so scores bouncing on either side of it used to
+        // flip the overlay. This sequence bounces in that same "used to be ambiguous" range but
+        // stays comfortably under STRONG_ON_THRESHOLD once smoothed, so it now holds steady.
+        val bouncing = listOf(0.20f, 0.32f, 0.25f, 0.38f, 0.22f, 0.35f, 0.28f, 0.31f)
         for (v in bouncing) {
-            controller.onClassification(classification(porn = v))
+            controller.onClassification(reading(strong = v))
         }
         assertFalse(surface.isShowing)
         assertEquals(0, surface.showCount)
@@ -58,18 +58,27 @@ class AutoBlurControllerTest {
     @Test
     fun `single spurious high reading does not trigger blur`() {
         // One bad tile crop (odd lighting/framing) reading high, surrounded by low readings,
-        // must not be enough on its own — smoothing dilutes it and a single frame can't satisfy
-        // the consecutive-reads requirement either way.
-        controller.onClassification(classification(porn = 0.05f))
-        controller.onClassification(classification(porn = 0.90f))
-        controller.onClassification(classification(porn = 0.05f))
-        controller.onClassification(classification(porn = 0.05f))
+        // must not be enough on its own — even though smoothing lets it briefly cross the ON
+        // threshold, a single frame can't satisfy the consecutive-reads requirement.
+        controller.onClassification(reading(strong = 0.05f))
+        controller.onClassification(reading(strong = 0.90f))
+        controller.onClassification(reading(strong = 0.05f))
+        controller.onClassification(reading(strong = 0.05f))
         assertFalse(surface.isShowing)
     }
 
     @Test
     fun `sustained strong porn or hentai content triggers blur within a couple seconds`() {
-        repeat(5) { controller.onClassification(classification(porn = 0.85f)) }
+        repeat(5) { controller.onClassification(reading(strong = 0.85f)) }
+        assertTrue(surface.isShowing)
+    }
+
+    @Test
+    fun `strong content at this app's own calibrated real-world value triggers blur`() {
+        // Regression test: prior tuning found real nudity content reads a sustained ~0.424 on
+        // this pipeline. STRONG_ON_THRESHOLD must stay below that or this app regresses on the
+        // exact content it was calibrated against.
+        repeat(5) { controller.onClassification(reading(strong = 0.424f)) }
         assertTrue(surface.isShowing)
     }
 
@@ -77,52 +86,42 @@ class AutoBlurControllerTest {
     fun `moderate sustained sexy score typical of beach or portrait photos never triggers blur`() {
         // GantMan's model routinely scores plainly-safe skin-heavy photos 0.3-0.55 on "sexy".
         // This must stay under SEXY_ON_THRESHOLD (0.65) even when sustained for a while.
-        repeat(10) { controller.onClassification(classification(sexy = 0.50f)) }
+        repeat(10) { controller.onClassification(reading(sexy = 0.50f)) }
         assertFalse(surface.isShowing)
     }
 
     @Test
     fun `sustained high sexy score alone can still trigger blur`() {
-        repeat(6) { controller.onClassification(classification(sexy = 0.80f)) }
+        repeat(6) { controller.onClassification(reading(sexy = 0.80f)) }
         assertTrue(surface.isShowing)
     }
 
     @Test
     fun `blur holds through a dead-zone dip, only clears on a sustained drop below the OFF threshold`() {
-        repeat(5) { controller.onClassification(classification(porn = 0.85f)) }
+        repeat(5) { controller.onClassification(reading(strong = 0.85f)) }
         assertTrue(surface.isShowing)
 
         // Dips into the dead zone (below ON, but not below OFF) must not clear it.
-        repeat(5) { controller.onClassification(classification(porn = 0.35f)) }
+        repeat(5) { controller.onClassification(reading(strong = 0.35f)) }
         assertTrue(surface.isShowing)
 
         // Only a sustained drop below the OFF threshold actually clears it.
-        repeat(4) { controller.onClassification(classification(porn = 0.05f)) }
+        repeat(4) { controller.onClassification(reading(strong = 0.05f)) }
         assertFalse(surface.isShowing)
     }
 
     @Test
-    fun `drawings and neutral labels never contribute to blur`() {
-        repeat(10) { controller.onClassification(classification(drawings = 0.9f, neutral = 0.1f)) }
-        assertFalse(surface.isShowing)
+    fun `a strong signal on one tile is not suppressed by a higher but subthreshold sexy signal elsewhere`() {
+        // Regression test for the tile-selection bug: classifyTiled() used to pick a single
+        // "best" tile by blended explicit-confidence, so a tile with porn=0.55 could lose the
+        // selection to a different tile with sexy=0.62 — discarding the porn signal even though
+        // it alone was strong enough to matter. FrameReading tracks both independently, so this
+        // must trigger via the strong signal regardless of what sexy is doing elsewhere.
+        repeat(5) { controller.onClassification(reading(strong = 0.55f, sexy = 0.62f)) }
+        assertTrue(surface.isShowing)
     }
 
-    private fun classification(
-        drawings: Float = 0f,
-        hentai: Float = 0f,
-        neutral: Float = 1f,
-        porn: Float = 0f,
-        sexy: Float = 0f
-    ): ClassificationResult {
-        val scores = mapOf(
-            "drawings" to drawings,
-            "hentai" to hentai,
-            "neutral" to neutral,
-            "porn" to porn,
-            "sexy" to sexy
-        )
-        return ClassificationResult(scores, maxOf(hentai, porn, sexy))
-    }
+    private fun reading(strong: Float = 0f, sexy: Float = 0f) = FrameReading(strong, sexy)
 
     private class FakeBlurSurface : BlurSurface {
         override var isShowing: Boolean = false

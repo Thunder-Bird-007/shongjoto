@@ -1,6 +1,6 @@
 package com.shongjoto.app.capture
 
-import com.shongjoto.app.classifier.ClassificationResult
+import com.shongjoto.app.classifier.FrameReading
 import com.shongjoto.app.overlay.BlurSurface
 import java.util.ArrayDeque
 
@@ -23,13 +23,15 @@ import java.util.ArrayDeque
  *
  * The two signals are tracked and thresholded **separately** rather than folded into one
  * "explicit" number, because they don't carry the same evidentiary weight:
- * - [ClassificationResult.strongConfidence] (max of hentai/porn) is treated as a strong,
- *   low-ambiguity signal — a tighter hysteresis band is fine because this pair rarely fires on
- *   safe content by accident.
- * - [ClassificationResult.sexyConfidence] is GantMan's noisiest class — beach/swimwear/gym/
- *   portrait photos routinely land in its mid-range despite being completely safe — so it gets
- *   a higher ON bar and a wider dead zone, and leans on the hysteresis/debounce logic above the
- *   most.
+ * - [FrameReading.strongConfidence] (max of hentai/porn, maxed across the full frame and every
+ *   tile independently — see [com.shongjoto.app.classifier.ExplicitContentClassifier.classifyTiled])
+ *   is a strong, low-ambiguity signal — a tighter hysteresis band is fine because this pair
+ *   rarely fires on safe content by accident. ON/OFF here (0.40/0.20) straddle this app's
+ *   on-device calibration point for real content (~0.42 sustained, per prior tuning), rather
+ *   than an arbitrary round number.
+ * - [FrameReading.sexyConfidence] is GantMan's noisiest class — beach/swimwear/gym/portrait
+ *   photos routinely land in its mid-range despite being completely safe — so it gets a higher
+ *   ON bar and a wider dead zone, and leans on the hysteresis/debounce logic above the most.
  * "drawings" and "neutral" never enter this calculation at all; they're implicitly safe.
  *
  * The overlay itself is click-through while showing (see [BlurSurface.show]) so the user can
@@ -43,7 +45,7 @@ class AutoBlurController(private val overlay: BlurSurface) {
     private val recentStrong = ArrayDeque<Float>()
     private val recentSexy = ArrayDeque<Float>()
 
-    fun onClassification(result: ClassificationResult) {
+    fun onClassification(result: FrameReading) {
         val smoothedStrong = smooth(recentStrong, result.strongConfidence)
         val smoothedSexy = smooth(recentSexy, result.sexyConfidence)
 
@@ -93,9 +95,12 @@ class AutoBlurController(private val overlay: BlurSurface) {
 
     companion object {
         // Strong signal (max of hentai/porn) — unambiguous even at moderate confidence, so a
-        // tighter hysteresis band is fine; false positives on this pair are rare.
-        const val STRONG_ON_THRESHOLD = 0.50f
-        const val STRONG_OFF_THRESHOLD = 0.25f
+        // tighter hysteresis band is fine; false positives on this pair are rare. Kept below
+        // this app's own on-device calibration point for real content (~0.42 sustained) rather
+        // than above it — an earlier version of this set ON to 0.50, which silently regressed
+        // detection of exactly the content this was calibrated against.
+        const val STRONG_ON_THRESHOLD = 0.40f
+        const val STRONG_OFF_THRESHOLD = 0.20f
 
         // "Sexy" signal — the model's noisiest class, so it needs a much higher bar to trigger
         // and a wide dead zone to resist chatter from skin-heavy-but-safe content (beach,

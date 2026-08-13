@@ -27,6 +27,20 @@ data class ClassificationResult(
 }
 
 /**
+ * What [ExplicitContentClassifier.classifyTiled] hands to [AutoBlurController]: the strongest
+ * strong-signal reading and the strongest sexy-signal reading found anywhere in the frame,
+ * tracked **independently**. [explicitConfidence] is the blend of the two, kept only for
+ * logging/debugging — nothing downstream thresholds against it.
+ */
+data class FrameReading(
+    val strongConfidence: Float,
+    val sexyConfidence: Float
+) {
+    val explicitConfidence: Float
+        get() = maxOf(strongConfidence, sexyConfidence)
+}
+
+/**
  * Wraps the MobileNetV2-based classifier in assets/model.tflite (from
  * github.com/GantMan/nsfw_model, MIT licensed). Input shape, output labels, and which labels
  * count as "explicit" are all isolated here so swapping to a different model later is a small,
@@ -46,26 +60,38 @@ class ExplicitContentClassifier(context: Context) {
     }
 
     /**
-     * Classifies the full frame plus a grid of [GRID_COLS]x[GRID_ROWS] tiles, returning
-     * whichever result has the highest explicit confidence. A single whole-frame classify()
-     * downscales everything to 224x224 first, so a small explicit region within an otherwise
-     * busy screen (e.g. one image in a feed) can shrink below what the model can detect —
-     * classifying tiles too catches that, while the whole-frame pass still catches content
-     * that a tile boundary might otherwise cut awkwardly in half.
+     * Classifies the full frame plus a grid of [GRID_COLS]x[GRID_ROWS] tiles, returning the
+     * strongest strong-signal reading and the strongest sexy-signal reading found *anywhere* —
+     * full frame or any tile — tracked independently. A single whole-frame classify() downscales
+     * everything to 224x224 first, so a small explicit region within an otherwise busy screen
+     * (e.g. one image in a feed) can shrink below what the model can detect; classifying tiles
+     * too catches that, while the whole-frame pass still catches content that a tile boundary
+     * might otherwise cut awkwardly in half.
      *
-     * A tile's result only overrides the full frame's if it clears [TILE_CONFIDENCE_FLOOR]: a
-     * cropped tile has no surrounding context (just a patch of skin, a collar, odd lighting), so
-     * it's inherently noisier than a full frame — on-device testing showed ordinary tiles (a
-     * talking-head video, cropped photos in a feed) occasionally reading above threshold on
-     * their own. The full frame's reading was validated against real content directly; tiles
-     * need more margin before being trusted.
+     * Earlier versions of this picked one "best" tile by blended explicit-confidence and
+     * returned only that tile's result — which meant a tile with a strong porn/hentai reading
+     * could lose the selection to a different tile with a slightly higher but still-subthreshold
+     * sexy reading, silently discarding the porn/hentai signal entirely. Tracking both signals
+     * independently across every region avoids that: a real signal from any one tile is never
+     * masked by a different, unrelated signal from another tile.
+     *
+     * A tile's reading for a given signal only counts if it clears that signal's
+     * [TILE_STRONG_FLOOR]/[TILE_SEXY_FLOOR] — a cropped tile has no surrounding context (just a
+     * patch of skin, a collar, odd lighting), so it's inherently noisier than a full frame, and
+     * this exists purely to keep near-zero per-tile noise out of the smoothing window in
+     * AutoBlurController. It intentionally sits well below AutoBlurController's ON thresholds
+     * (rather than near or above them, as before) — real gating is [AutoBlurController]'s job via
+     * hysteresis, smoothing, and consecutive-reads debounce; this floor must never be the reason
+     * a genuine reading gets dropped before reaching it.
      */
-    fun classifyTiled(bitmap: Bitmap): ClassificationResult {
-        var best = classify(bitmap)
+    fun classifyTiled(bitmap: Bitmap): FrameReading {
+        val full = classify(bitmap)
+        var bestStrong = full.strongConfidence
+        var bestSexy = full.sexyConfidence
 
         val tileWidth = bitmap.width / GRID_COLS
         val tileHeight = bitmap.height / GRID_ROWS
-        if (tileWidth <= 0 || tileHeight <= 0) return best
+        if (tileWidth <= 0 || tileHeight <= 0) return FrameReading(bestStrong, bestSexy)
 
         for (row in 0 until GRID_ROWS) {
             for (col in 0 until GRID_COLS) {
@@ -78,14 +104,15 @@ class ExplicitContentClassifier(context: Context) {
                 val result = classify(tile)
                 tile.recycle()
 
-                if (result.explicitConfidence > best.explicitConfidence &&
-                    result.explicitConfidence >= TILE_CONFIDENCE_FLOOR
-                ) {
-                    best = result
+                if (result.strongConfidence > bestStrong && result.strongConfidence >= TILE_STRONG_FLOOR) {
+                    bestStrong = result.strongConfidence
+                }
+                if (result.sexyConfidence > bestSexy && result.sexyConfidence >= TILE_SEXY_FLOOR) {
+                    bestSexy = result.sexyConfidence
                 }
             }
         }
-        return best
+        return FrameReading(bestStrong, bestSexy)
     }
 
     fun close() {
@@ -144,9 +171,12 @@ class ExplicitContentClassifier(context: Context) {
         private const val GRID_COLS = 2
         private const val GRID_ROWS = 3
 
-        // Minimum confidence for a tile's result to be trusted over the full frame's — higher
-        // than AutoBlurController's main threshold since a cropped tile is noisier. Tune this
-        // (not the main threshold) if tile-driven false positives keep showing up.
-        private const val TILE_CONFIDENCE_FLOOR = 0.6f
+        // Per-tile noise floors — deliberately low and well below AutoBlurController's ON
+        // thresholds (see classifyTiled's doc). These just keep near-zero tile noise out of the
+        // smoothing window; they must never sit at or above an ON threshold, or a tile reading
+        // that's meaningful enough to be picked up here could still be too low to ever trigger
+        // the overlay downstream.
+        private const val TILE_STRONG_FLOOR = 0.15f
+        private const val TILE_SEXY_FLOOR = 0.15f
     }
 }
