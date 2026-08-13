@@ -53,13 +53,12 @@ class ExplicitContentClassifier(context: Context) {
      * classifying tiles too catches that, while the whole-frame pass still catches content
      * that a tile boundary might otherwise cut awkwardly in half.
      *
-     * A tile's result only overrides the full frame's if it clears [TILE_CONFIDENCE_FLOOR], a
-     * stricter bar than any of AutoBlurController's ON thresholds: a cropped tile has no
-     * surrounding context (just a patch of skin, a collar, odd lighting), so it's inherently
-     * noisier than a full frame — on-device testing showed ordinary tiles (a talking-head video,
-     * cropped photos in a feed) occasionally reading above threshold on their own. The full
-     * frame's reading was validated against real content directly; tiles need more margin
-     * before being trusted.
+     * A tile's result only overrides the full frame's if it clears [TILE_CONFIDENCE_FLOOR]: a
+     * cropped tile has no surrounding context (just a patch of skin, a collar, odd lighting), so
+     * it's inherently noisier than a full frame — on-device testing showed ordinary tiles (a
+     * talking-head video, cropped photos in a feed) occasionally reading above threshold on
+     * their own. The full frame's reading was validated against real content directly; tiles
+     * need more margin before being trusted.
      */
     fun classifyTiled(bitmap: Bitmap): ClassificationResult {
         var best = classify(bitmap)
