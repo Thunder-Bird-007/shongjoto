@@ -138,11 +138,16 @@ class ScreenCaptureService : AccessibilityService() {
             val peekTag = if (wasBlurredBeforeCapture) "peek, " else ""
             handler.post {
                 // show()/hide() go through WindowManager and must run on a Looper thread.
-                autoBlurController.onClassification(classification.explicitConfidence)
+                autoBlurController.onClassification(classification)
                 val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
+                val strongText = "%.3f".format(classification.strongConfidence)
+                val sexyText = "%.3f".format(classification.sexyConfidence)
                 Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, $peekTag" +
-                    "explicit=$confidenceText, ${elapsedMs}ms, $blurState")
-                CaptureLog.record("captured ($peekTag" + "explicit=$confidenceText, ${elapsedMs}ms) [$blurState]")
+                    "explicit=$confidenceText (strong=$strongText, sexy=$sexyText), ${elapsedMs}ms, $blurState")
+                CaptureLog.record(
+                    "captured ($peekTag" +
+                        "strong=$strongText, sexy=$sexyText, ${elapsedMs}ms) [$blurState]"
+                )
             }
         }
     }

@@ -8,6 +8,17 @@ import android.view.View
 import android.view.WindowManager
 
 /**
+ * Minimal surface [AutoBlurController][com.shongjoto.app.capture.AutoBlurController] needs to
+ * drive the overlay — split out from [BlurOverlayController] so the hysteresis/debounce state
+ * machine can be unit-tested with an in-memory fake instead of a real WindowManager.
+ */
+interface BlurSurface {
+    val isShowing: Boolean
+    fun show(touchable: Boolean = true, onTap: (() -> Unit)? = null)
+    fun hide()
+}
+
+/**
  * Adds/removes a full-screen, fully OPAQUE [TYPE_APPLICATION_OVERLAY] over whatever app is in
  * the foreground, rendering [NoiseOverlayView] (animated grain/static) rather than an actual
  * blur: Android has no API to read another app's window pixels to blur them, and the only real
@@ -16,12 +27,12 @@ import android.view.WindowManager
  * texture is fully opaque, so this still fully hides content; it just looks like corrupted
  * static instead of a flat color.
  */
-class BlurOverlayController(private val context: Context) {
+class BlurOverlayController(private val context: Context) : BlurSurface {
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var overlayView: View? = null
 
-    val isShowing: Boolean
+    override val isShowing: Boolean
         get() = overlayView != null
 
     /**
@@ -33,7 +44,7 @@ class BlurOverlayController(private val context: Context) {
      * this is the mode the real classifier-driven overlay uses.
      * @param onTap Only used when [touchable] is true.
      */
-    fun show(touchable: Boolean = true, onTap: (() -> Unit)? = null) {
+    override fun show(touchable: Boolean, onTap: (() -> Unit)?) {
         if (overlayView != null) return
 
         val view = NoiseOverlayView(context).apply {
@@ -70,7 +81,7 @@ class BlurOverlayController(private val context: Context) {
         }
     }
 
-    fun hide() {
+    override fun hide() {
         val view = overlayView ?: return
         try {
             windowManager.removeView(view)

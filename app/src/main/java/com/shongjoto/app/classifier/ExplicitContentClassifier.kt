@@ -13,7 +13,18 @@ import java.nio.channels.FileChannel
 data class ClassificationResult(
     val scores: Map<String, Float>,
     val explicitConfidence: Float
-)
+) {
+    /** hentai/porn are unambiguous even at moderate confidence — the model rarely lands here by
+     * accident, so this is treated as the strong signal by AutoBlurController's hysteresis. */
+    val strongConfidence: Float
+        get() = maxOf(scores.getValue("hentai"), scores.getValue("porn"))
+
+    /** "sexy" is the noisiest of the five classes — beach/swimwear/gym/portrait photos routinely
+     * land in its mid-range despite being completely safe, so it's tracked separately and needs
+     * a much higher, more hysteresis-guarded bar before it's trusted. See AutoBlurController. */
+    val sexyConfidence: Float
+        get() = scores.getValue("sexy")
+}
 
 /**
  * Wraps the MobileNetV2-based classifier in assets/model.tflite (from
@@ -43,11 +54,12 @@ class ExplicitContentClassifier(context: Context) {
      * that a tile boundary might otherwise cut awkwardly in half.
      *
      * A tile's result only overrides the full frame's if it clears [TILE_CONFIDENCE_FLOOR], a
-     * stricter bar than the main threshold: a cropped tile has no surrounding context (just a
-     * patch of skin, a collar, odd lighting), so it's inherently noisier than a full frame —
-     * on-device testing showed ordinary tiles (a talking-head video, cropped photos in a feed)
-     * occasionally reading above the main threshold on their own. The full frame's threshold
-     * was validated against real content directly; tiles need more margin before being trusted.
+     * stricter bar than any of AutoBlurController's ON thresholds: a cropped tile has no
+     * surrounding context (just a patch of skin, a collar, odd lighting), so it's inherently
+     * noisier than a full frame — on-device testing showed ordinary tiles (a talking-head video,
+     * cropped photos in a feed) occasionally reading above threshold on their own. The full
+     * frame's reading was validated against real content directly; tiles need more margin
+     * before being trusted.
      */
     fun classifyTiled(bitmap: Bitmap): ClassificationResult {
         var best = classify(bitmap)

@@ -57,4 +57,6 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
 
     implementation("com.google.ai.edge.litert:litert:2.1.6")
+
+    testImplementation("junit:junit:4.13.2")
 }
