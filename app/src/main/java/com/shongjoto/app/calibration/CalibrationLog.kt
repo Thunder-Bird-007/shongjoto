@@ -3,6 +3,8 @@ package com.shongjoto.app.calibration
 import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
 import com.shongjoto.app.classifier.FrameReading
+import com.shongjoto.app.mode.BlurMode
+import com.shongjoto.app.mode.BlurModeScheduler
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -14,7 +16,8 @@ data class CalibrationEntry(
     val label: CalibrationLabel,
     val strongConfidence: Float,
     val sexyConfidence: Float,
-    val overlayWasShowing: Boolean
+    val overlayWasShowing: Boolean,
+    val mode: BlurMode
 )
 
 /**
@@ -36,7 +39,8 @@ object CalibrationLog {
     val entries = mutableStateListOf<CalibrationEntry>()
 
     private const val FILE_NAME = "calibration_log.csv"
-    private const val HEADER = "timestamp_iso,label,strong_confidence,sexy_confidence,overlay_was_showing\n"
+    private const val HEADER =
+        "timestamp_iso,label,strong_confidence,sexy_confidence,overlay_was_showing,mode\n"
 
     fun record(context: Context, label: CalibrationLabel, reading: FrameReading, overlayWasShowing: Boolean) {
         val entry = CalibrationEntry(
@@ -44,7 +48,8 @@ object CalibrationLog {
             label = label,
             strongConfidence = reading.strongConfidence,
             sexyConfidence = reading.sexyConfidence,
-            overlayWasShowing = overlayWasShowing
+            overlayWasShowing = overlayWasShowing,
+            mode = BlurModeScheduler.currentMode()
         )
         entries.add(0, entry)
         appendToFile(context, entry)
@@ -62,7 +67,8 @@ object CalibrationLog {
                 append(entry.label.csvValue).append(',')
                 append("%.4f".format(entry.strongConfidence)).append(',')
                 append("%.4f".format(entry.sexyConfidence)).append(',')
-                append(entry.overlayWasShowing).append('\n')
+                append(entry.overlayWasShowing).append(',')
+                append(entry.mode.name).append('\n')
             }
         )
     }

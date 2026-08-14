@@ -12,6 +12,7 @@ import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.shongjoto.app.classifier.ExplicitContentClassifier
 import com.shongjoto.app.classifier.FrameReading
+import com.shongjoto.app.mode.BlurModeScheduler
 import com.shongjoto.app.overlay.BlurOverlayController
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -202,11 +203,13 @@ class ScreenCaptureService : AccessibilityService() {
                 val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
                 val strongText = "%.3f".format(classification.strongConfidence)
                 val sexyText = "%.3f".format(classification.sexyConfidence)
+                val mode = BlurModeScheduler.currentMode().label
                 Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, $peekTag" +
-                    "explicit=$confidenceText (strong=$strongText, sexy=$sexyText), ${elapsedMs}ms, $blurState")
+                    "explicit=$confidenceText (strong=$strongText, sexy=$sexyText), ${elapsedMs}ms, " +
+                    "$blurState, mode=$mode")
                 CaptureLog.record(
                     "captured ($peekTag" +
-                        "strong=$strongText, sexy=$sexyText, ${elapsedMs}ms) [$blurState]"
+                        "strong=$strongText, sexy=$sexyText, ${elapsedMs}ms) [$blurState, $mode]"
                 )
             }
         }

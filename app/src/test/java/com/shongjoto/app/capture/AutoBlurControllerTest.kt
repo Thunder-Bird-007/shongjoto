@@ -1,6 +1,7 @@
 package com.shongjoto.app.capture
 
 import com.shongjoto.app.classifier.FrameReading
+import com.shongjoto.app.mode.BlurMode
 import com.shongjoto.app.overlay.BlurSurface
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,6 +14,9 @@ import org.junit.Test
  * sequences — this is what stands in for the on-device "scroll safe content for 30+ seconds" and
  * "sustained explicit content" scenarios in an environment with no Android device attached. Real
  * on-device / real-photo testing is still required before shipping (see PR description).
+ *
+ * All tests here run in EXTREME mode (today's originally-calibrated thresholds) unless noted —
+ * see the `mode selection` group at the bottom for LITE-specific behavior.
  */
 class AutoBlurControllerTest {
 
@@ -22,7 +26,7 @@ class AutoBlurControllerTest {
     @Before
     fun setUp() {
         surface = FakeBlurSurface()
-        controller = AutoBlurController(surface)
+        controller = AutoBlurController(surface) { BlurMode.EXTREME }
     }
 
     @Test
@@ -76,7 +80,7 @@ class AutoBlurControllerTest {
     @Test
     fun `strong content at this app's own calibrated real-world value triggers blur`() {
         // Regression test: prior tuning found real nudity content reads a sustained ~0.424 on
-        // this pipeline. STRONG_ON_THRESHOLD must stay below that or this app regresses on the
+        // this pipeline. EXTREME's strongOn must stay below that or this app regresses on the
         // exact content it was calibrated against.
         repeat(5) { controller.onClassification(reading(strong = 0.424f)) }
         assertTrue(surface.isShowing)
@@ -85,7 +89,7 @@ class AutoBlurControllerTest {
     @Test
     fun `moderate sustained sexy score typical of beach or portrait photos never triggers blur`() {
         // GantMan's model routinely scores plainly-safe skin-heavy photos 0.3-0.55 on "sexy".
-        // This must stay under SEXY_ON_THRESHOLD (0.65) even when sustained for a while.
+        // This must stay under EXTREME's sexyOn (0.65) even when sustained for a while.
         repeat(10) { controller.onClassification(reading(sexy = 0.50f)) }
         assertFalse(surface.isShowing)
     }
@@ -119,6 +123,56 @@ class AutoBlurControllerTest {
         // must trigger via the strong signal regardless of what sexy is doing elsewhere.
         repeat(5) { controller.onClassification(reading(strong = 0.55f, sexy = 0.62f)) }
         assertTrue(surface.isShowing)
+    }
+
+    // --- mode selection -----------------------------------------------------------------
+
+    @Test
+    fun `LITE mode does not trigger on content that would trigger EXTREME`() {
+        val surface = FakeBlurSurface()
+        val controller = AutoBlurController(surface) { BlurMode.LITE }
+        // 0.424 triggers EXTREME (see the calibration test above) but must not trigger LITE,
+        // which is deliberately less sensitive.
+        repeat(6) { controller.onClassification(reading(strong = 0.424f)) }
+        assertFalse(surface.isShowing)
+    }
+
+    @Test
+    fun `LITE mode still triggers on unambiguous strong content`() {
+        val surface = FakeBlurSurface()
+        val controller = AutoBlurController(surface) { BlurMode.LITE }
+        repeat(6) { controller.onClassification(reading(strong = 0.90f)) }
+        assertTrue(surface.isShowing)
+    }
+
+    @Test
+    fun `switching from EXTREME to LITE mid-session does not instantly clear an active blur`() {
+        // The smoothing/debounce state (the last few raw readings, and how many consecutive
+        // clean reads have been seen) carries across a mode switch; only the thresholds being
+        // compared against change. Content dropping to safe right as the mode switches still has
+        // to clear the smoothing window and the consecutive-reads debounce before it hides —
+        // switching modes is not itself a reason to hide.
+        var mode = BlurMode.EXTREME
+        val surface = FakeBlurSurface()
+        val controller = AutoBlurController(surface) { mode }
+
+        repeat(5) { controller.onClassification(reading(strong = 0.85f)) }
+        assertTrue(surface.isShowing)
+
+        mode = BlurMode.LITE
+        // Smoothed value is still diluted by the trailing 0.85 readings for the next couple of
+        // calls, so the overlay must stay up.
+        controller.onClassification(reading(strong = 0.10f))
+        assertTrue(surface.isShowing)
+        controller.onClassification(reading(strong = 0.10f))
+        assertTrue(surface.isShowing)
+        controller.onClassification(reading(strong = 0.10f))
+        assertTrue(surface.isShowing)
+
+        // Only once the smoothed value has actually settled below LITE's OFF threshold for
+        // CONSECUTIVE_CLEAN_READS_REQUIRED calls in a row does it clear.
+        controller.onClassification(reading(strong = 0.10f))
+        assertFalse(surface.isShowing)
     }
 
     private fun reading(strong: Float = 0f, sexy: Float = 0f) = FrameReading(strong, sexy)

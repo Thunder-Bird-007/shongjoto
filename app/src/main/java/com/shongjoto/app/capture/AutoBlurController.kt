@@ -1,6 +1,8 @@
 package com.shongjoto.app.capture
 
 import com.shongjoto.app.classifier.FrameReading
+import com.shongjoto.app.mode.BlurMode
+import com.shongjoto.app.mode.BlurModeScheduler
 import com.shongjoto.app.overlay.BlurSurface
 import java.util.ArrayDeque
 
@@ -26,19 +28,26 @@ import java.util.ArrayDeque
  * - [FrameReading.strongConfidence] (max of hentai/porn, maxed across the full frame and every
  *   tile independently — see [com.shongjoto.app.classifier.ExplicitContentClassifier.classifyTiled])
  *   is a strong, low-ambiguity signal — a tighter hysteresis band is fine because this pair
- *   rarely fires on safe content by accident. ON/OFF here (0.40/0.20) straddle this app's
- *   on-device calibration point for real content (~0.42 sustained, per prior tuning), rather
- *   than an arbitrary round number.
+ *   rarely fires on safe content by accident.
  * - [FrameReading.sexyConfidence] is GantMan's noisiest class — beach/swimwear/gym/portrait
  *   photos routinely land in its mid-range despite being completely safe — so it gets a higher
  *   ON bar and a wider dead zone, and leans on the hysteresis/debounce logic above the most.
  * "drawings" and "neutral" never enter this calculation at all; they're implicitly safe.
  *
+ * Which [ThresholdProfile] applies is picked fresh on every call from [modeProvider] (defaulting
+ * to [BlurModeScheduler]) rather than cached — the smoothing/debounce state above carries across
+ * a mode change mid-session so there's no discontinuity at the 11pm/6am boundary, but the
+ * thresholds compared against it do switch immediately. See [PROFILES] for what actually differs
+ * between modes.
+ *
  * The overlay itself is click-through while showing (see [BlurSurface.show]) so the user can
  * scroll/navigate away from content without seeing it — that's the real escape path; once the
  * screen shows something clean, this clears the blur on its own.
  */
-class AutoBlurController(private val overlay: BlurSurface) {
+class AutoBlurController(
+    private val overlay: BlurSurface,
+    private val modeProvider: () -> BlurMode = { BlurModeScheduler.currentMode() }
+) {
 
     private var consecutiveExplicitReads = 0
     private var consecutiveCleanReads = 0
@@ -46,13 +55,14 @@ class AutoBlurController(private val overlay: BlurSurface) {
     private val recentSexy = ArrayDeque<Float>()
 
     fun onClassification(result: FrameReading) {
+        val profile = PROFILES.getValue(modeProvider())
         val smoothedStrong = smooth(recentStrong, result.strongConfidence)
         val smoothedSexy = smooth(recentSexy, result.sexyConfidence)
 
         val clearlyExplicit =
-            smoothedStrong >= STRONG_ON_THRESHOLD || smoothedSexy >= SEXY_ON_THRESHOLD
+            smoothedStrong >= profile.strongOn || smoothedSexy >= profile.sexyOn
         val clearlyClean =
-            smoothedStrong < STRONG_OFF_THRESHOLD && smoothedSexy < SEXY_OFF_THRESHOLD
+            smoothedStrong < profile.strongOff && smoothedSexy < profile.sexyOff
 
         if (clearlyExplicit) {
             consecutiveCleanReads = 0
@@ -93,21 +103,15 @@ class AutoBlurController(private val overlay: BlurSurface) {
         return window.average().toFloat()
     }
 
+    /** One ON/OFF threshold pair per signal. See [PROFILES] for the values used per [BlurMode]. */
+    data class ThresholdProfile(
+        val strongOn: Float,
+        val strongOff: Float,
+        val sexyOn: Float,
+        val sexyOff: Float
+    )
+
     companion object {
-        // Strong signal (max of hentai/porn) — unambiguous even at moderate confidence, so a
-        // tighter hysteresis band is fine; false positives on this pair are rare. Kept below
-        // this app's own on-device calibration point for real content (~0.42 sustained) rather
-        // than above it — an earlier version of this set ON to 0.50, which silently regressed
-        // detection of exactly the content this was calibrated against.
-        const val STRONG_ON_THRESHOLD = 0.40f
-        const val STRONG_OFF_THRESHOLD = 0.20f
-
-        // "Sexy" signal — the model's noisiest class, so it needs a much higher bar to trigger
-        // and a wide dead zone to resist chatter from skin-heavy-but-safe content (beach,
-        // swimming, close-up portraits). These match the ON > 0.65 / OFF < 0.30 spec directly.
-        const val SEXY_ON_THRESHOLD = 0.65f
-        const val SEXY_OFF_THRESHOLD = 0.30f
-
         const val CONSECUTIVE_CLEAN_READS_REQUIRED = 2
         const val CONSECUTIVE_EXPLICIT_READS_REQUIRED = 2
 
@@ -115,5 +119,29 @@ class AutoBlurController(private val overlay: BlurSurface) {
         // thresholds. Higher = less flicker/false-triggers on borderline content, but slower to
         // react in both directions.
         const val SMOOTHING_WINDOW = 3
+
+        /**
+         * EXTREME is this app's original, already-calibrated profile, unchanged: ON/OFF here
+         * straddle the on-device calibration point for real content (~0.42 sustained strong
+         * signal, per prior tuning), and the sexy pair matches the ON > 0.65 / OFF < 0.30 spec
+         * directly.
+         *
+         * LITE is deliberately less sensitive — wider dead zone, higher bar to trigger — for
+         * daytime use when fewer interruptions matter more than catching every borderline case.
+         * These specific numbers are a starting point, not a calibrated one: there was no
+         * labeled daytime data to tune against when this was written. Revisit using
+         * CalibrationLog data once there's enough of it, the same way EXTREME's numbers should
+         * keep being checked against new data too.
+         */
+        val PROFILES: Map<BlurMode, ThresholdProfile> = mapOf(
+            BlurMode.EXTREME to ThresholdProfile(
+                strongOn = 0.40f, strongOff = 0.20f,
+                sexyOn = 0.65f, sexyOff = 0.30f
+            ),
+            BlurMode.LITE to ThresholdProfile(
+                strongOn = 0.55f, strongOff = 0.30f,
+                sexyOn = 0.78f, sexyOff = 0.45f
+            )
+        )
     }
 }
