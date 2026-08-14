@@ -128,12 +128,14 @@ class AutoBlurControllerTest {
     // --- mode selection -----------------------------------------------------------------
 
     @Test
-    fun `LITE mode does not trigger on content that would trigger EXTREME`() {
+    fun `LITE mode does not trigger on a sexy-only reading that would trigger EXTREME`() {
+        // Real CalibrationLog data showed explicit content consistently scoring 0.42-0.50 on
+        // the strong signal, leaving LITE's strongOn (0.42) almost no room to differ from
+        // EXTREME's (0.40) without missing real content — so this is where LITE's actual extra
+        // leniency lives now: 0.70 clears EXTREME's sexyOn (0.65) but sits below LITE's (0.78).
         val surface = FakeBlurSurface()
         val controller = AutoBlurController(surface) { BlurMode.LITE }
-        // 0.424 triggers EXTREME (see the calibration test above) but must not trigger LITE,
-        // which is deliberately less sensitive.
-        repeat(6) { controller.onClassification(reading(strong = 0.424f)) }
+        repeat(6) { controller.onClassification(reading(sexy = 0.70f)) }
         assertFalse(surface.isShowing)
     }
 
@@ -142,6 +144,17 @@ class AutoBlurControllerTest {
         val surface = FakeBlurSurface()
         val controller = AutoBlurController(surface) { BlurMode.LITE }
         repeat(6) { controller.onClassification(reading(strong = 0.90f)) }
+        assertTrue(surface.isShowing)
+    }
+
+    @Test
+    fun `LITE mode now triggers on real calibrated explicit content (previously missed at strongOn 0_55)`() {
+        // Regression test for the recalibration itself: real labeled explicit content observed
+        // via CalibrationLog scored 0.42-0.50, all of which the old LITE strongOn (0.55) would
+        // have missed entirely.
+        val surface = FakeBlurSurface()
+        val controller = AutoBlurController(surface) { BlurMode.LITE }
+        repeat(6) { controller.onClassification(reading(strong = 0.45f)) }
         assertTrue(surface.isShowing)
     }
 

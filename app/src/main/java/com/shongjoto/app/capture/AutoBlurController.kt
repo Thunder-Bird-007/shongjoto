@@ -126,12 +126,15 @@ class AutoBlurController(
          * signal, per prior tuning), and the sexy pair matches the ON > 0.65 / OFF < 0.30 spec
          * directly.
          *
-         * LITE is deliberately less sensitive — wider dead zone, higher bar to trigger — for
-         * daytime use when fewer interruptions matter more than catching every borderline case.
-         * These specific numbers are a starting point, not a calibrated one: there was no
-         * labeled daytime data to tune against when this was written. Revisit using
-         * CalibrationLog data once there's enough of it, the same way EXTREME's numbers should
-         * keep being checked against new data too.
+         * LITE's strongOn/strongOff were recalibrated from real CalibrationLog data: labeled
+         * explicit content in that batch consistently scored 0.42-0.50 on the strong signal and
+         * never higher, so the original placeholder (0.55) would have missed all of it. There
+         * isn't much room left to be meaningfully less sensitive than EXTREME on the strong
+         * signal without dropping below real content's observed floor — so LITE's actual
+         * leniency now mostly lives in its sexy threshold instead, which still has real headroom
+         * (observed non-explicit sexy readings topped out around 0.58, comfortably under both
+         * 0.65 and 0.78). Revisit both profiles as more CalibrationLog data comes in — this is
+         * one batch, not a settled calibration.
          */
         val PROFILES: Map<BlurMode, ThresholdProfile> = mapOf(
             BlurMode.EXTREME to ThresholdProfile(
@@ -139,7 +142,7 @@ class AutoBlurController(
                 sexyOn = 0.65f, sexyOff = 0.30f
             ),
             BlurMode.LITE to ThresholdProfile(
-                strongOn = 0.55f, strongOff = 0.30f,
+                strongOn = 0.42f, strongOff = 0.20f,
                 sexyOn = 0.78f, sexyOff = 0.45f
             )
         )
