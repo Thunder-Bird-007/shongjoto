@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- calibration_log.csv lives in getExternalFilesDir(null), i.e. the root of this path. -->
+    <external-files-path name="calibration" path="." />
+</paths>

@@ -32,8 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import com.shongjoto.app.calibration.CalibrationLog
+import com.shongjoto.app.calibration.CalibrationOverlayService
+import com.shongjoto.app.calibration.CalibrationOverlayState
 import com.shongjoto.app.capture.CaptureLog
 import com.shongjoto.app.capture.ScreenCaptureService
+import com.shongjoto.app.mode.BlurMode
+import com.shongjoto.app.mode.BlurModeScheduler
 import com.shongjoto.app.overlay.DebugOverlayState
 import com.shongjoto.app.overlay.OverlayService
 
@@ -41,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
     private val hasOverlayPermission = mutableStateOf(false)
     private val isAccessibilityServiceEnabled = mutableStateOf(false)
+    private val currentMode = mutableStateOf(BlurModeScheduler.currentMode())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,7 +55,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MainScreen(hasOverlayPermission, isAccessibilityServiceEnabled)
+                    MainScreen(hasOverlayPermission, isAccessibilityServiceEnabled, currentMode)
                 }
             }
         }
@@ -60,10 +67,13 @@ class MainActivity : ComponentActivity() {
         // reliable result code, so just recheck both whenever the app comes back to the
         // foreground. (The debug overlay switch doesn't need a resync here — it reads
         // DebugOverlayState directly, which OverlayService keeps accurate regardless of how
-        // the overlay was dismissed.)
+        // the overlay was dismissed.) Mode is recomputed here too — it's purely a function of
+        // wall-clock time, so there's no state to resync, just a value to refresh; it won't
+        // update live while the app sits open across the 11pm/6am boundary, only on resume.
         hasOverlayPermission.value = Settings.canDrawOverlays(this)
         isAccessibilityServiceEnabled.value =
             isAccessibilityServiceEnabled(this, ScreenCaptureService::class.java)
+        currentMode.value = BlurModeScheduler.currentMode()
     }
 }
 
@@ -81,12 +91,14 @@ private fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<
 @Composable
 private fun MainScreen(
     hasOverlayPermissionState: MutableState<Boolean>,
-    isAccessibilityServiceEnabledState: MutableState<Boolean>
+    isAccessibilityServiceEnabledState: MutableState<Boolean>,
+    currentModeState: MutableState<BlurMode>
 ) {
     val context = LocalContext.current
     val hasOverlayPermission by hasOverlayPermissionState
     val overlayShowing by DebugOverlayState.isShowing
     val isAccessibilityServiceEnabled by isAccessibilityServiceEnabledState
+    val currentMode by currentModeState
 
     Scaffold { innerPadding ->
         Column(
@@ -99,6 +111,12 @@ private fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(text = "Shongjoto", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                text = "Mode: ${currentMode.label} " +
+                    if (currentMode == BlurMode.EXTREME) "(11pm–6am)" else "(6am–11pm)",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+            )
 
             if (!hasOverlayPermission) {
                 Text(
@@ -187,6 +205,72 @@ private fun MainScreen(
                     }
                 }
             }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
+
+            CalibrationSection(hasOverlayPermission)
         }
+    }
+}
+
+@Composable
+private fun CalibrationSection(hasOverlayPermission: Boolean) {
+    val context = LocalContext.current
+    val calibrationRunning by CalibrationOverlayState.isRunning
+    val entries = CalibrationLog.entries
+
+    Text(
+        text = "Calibration overlay",
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(bottom = 4.dp)
+    )
+    Text(
+        text = "Floating button for manually labeling content while testing — Explicit / Not " +
+            "Explicit / False Positive / False Negative. Debug only.",
+        style = MaterialTheme.typography.bodySmall,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+
+    if (!hasOverlayPermission) {
+        Text(
+            text = "Needs the overlay permission above first.",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+    } else {
+        Switch(
+            checked = calibrationRunning,
+            onCheckedChange = { checked ->
+                val serviceIntent = Intent(context, CalibrationOverlayService::class.java)
+                if (checked) {
+                    context.startService(serviceIntent)
+                } else {
+                    context.stopService(serviceIntent)
+                }
+            }
+        )
+    }
+
+    Text(
+        text = "Entries recorded: ${entries.size}",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 12.dp, bottom = 8.dp)
+    )
+
+    Button(
+        onClick = {
+            val file = CalibrationLog.file(context)
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/csv"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share calibration data"))
+        },
+        enabled = entries.isNotEmpty()
+    ) {
+        Text("Share calibration data")
     }
 }
