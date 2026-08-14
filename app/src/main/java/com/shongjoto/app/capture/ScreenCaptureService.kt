@@ -21,12 +21,17 @@ import java.util.concurrent.Executors
 
 /**
  * Periodically calls takeScreenshot() (API 30+) roughly once per second while the
- * accessibility service is enabled, then classifies each frame with
- * [ExplicitContentClassifier] off the main thread. Capture scheduling never waits on
- * classification — the ~1s cadence is independent of how long inference takes.
- * [AutoBlurController] turns each result into show/hide decisions on its own
- * [BlurOverlayController] instance (separate from the manual debug toggle's). Results also log
- * through [CaptureLog], shown on the main screen, for sanity-checking.
+ * accessibility service is enabled, then classifies each frame off the main thread with BOTH
+ * live models — [ExplicitContentClassifier] (GantMan, tiled) and [FalconsaiClassifier]
+ * (single full-frame pass) — feeding both into [AutoBlurController]'s OR-ensemble. Capture
+ * scheduling never waits on classification — the ~1s cadence is independent of how long
+ * inference takes. [AutoBlurController] turns each pair of readings into a show/hide decision on
+ * its own [BlurOverlayController] instance (separate from the manual debug toggle's). Results
+ * also log through [CaptureLog], shown on the main screen, for sanity-checking.
+ *
+ * [NudeNetClassifier] stays comparison-only, loaded lazily and only ever touched from
+ * [requestCalibrationCapture] — see its own doc for why it hasn't earned a place in the live
+ * ensemble (yet).
  *
  * Also exposes [requestCalibrationCapture] for
  * [com.shongjoto.app.calibration.CalibrationOverlayService] to trigger an immediate, one-off
@@ -40,9 +45,8 @@ class ScreenCaptureService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val captureRunnable = Runnable { captureFrame() }
     private lateinit var classifier: ExplicitContentClassifier
-    // Comparison-only models, loaded lazily and only ever touched from requestCalibrationCapture
-    // — see FalconsaiClassifier/NudeNetClassifier docs for why they never enter the live loop.
-    private var falconsaiClassifier: FalconsaiClassifier? = null
+    private lateinit var falconsaiClassifier: FalconsaiClassifier
+    // Comparison-only — see NudeNetClassifier's doc for why it never enters the live loop.
     private var nudenetClassifier: NudeNetClassifier? = null
     private lateinit var classificationExecutor: ExecutorService
     private lateinit var overlayController: BlurOverlayController
@@ -51,6 +55,7 @@ class ScreenCaptureService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         classifier = ExplicitContentClassifier(this)
+        falconsaiClassifier = FalconsaiClassifier(this)
         classificationExecutor = Executors.newSingleThreadExecutor()
         overlayController = BlurOverlayController(this)
         autoBlurController = AutoBlurController(overlayController)
@@ -72,7 +77,7 @@ class ScreenCaptureService : AccessibilityService() {
         handler.removeCallbacks(captureRunnable)
         classificationExecutor.shutdownNow()
         classifier.close()
-        falconsaiClassifier?.close()
+        falconsaiClassifier.close()
         nudenetClassifier?.close()
         overlayController.hide()
         Log.d(TAG, "Service unbound, capture loop stopped")
@@ -140,11 +145,10 @@ class ScreenCaptureService : AccessibilityService() {
             return
         }
         classificationExecutor.execute {
-            val falconsai = falconsaiClassifier ?: FalconsaiClassifier(this).also { falconsaiClassifier = it }
             val nudenet = nudenetClassifier ?: NudeNetClassifier(this).also { nudenetClassifier = it }
 
             val gantman = classifier.classifyTiled(bitmap)
-            val falconsaiScore = falconsai.classify(bitmap)
+            val falconsaiScore = falconsaiClassifier.classify(bitmap)
             val nudenetScore = nudenet.classify(bitmap)
             bitmap.recycle()
 
@@ -220,24 +224,26 @@ class ScreenCaptureService : AccessibilityService() {
 
         classificationExecutor.execute {
             val startMs = SystemClock.elapsedRealtime()
-            val classification = classifier.classifyTiled(softwareBitmap)
+            val gantman = classifier.classifyTiled(softwareBitmap)
+            val falconsaiScore = falconsaiClassifier.classify(softwareBitmap)
             val elapsedMs = SystemClock.elapsedRealtime() - startMs
             softwareBitmap.recycle()
-            val confidenceText = "%.3f".format(classification.explicitConfidence)
             val peekTag = if (wasBlurredBeforeCapture) "peek, " else ""
             handler.post {
                 // show()/hide() go through WindowManager and must run on a Looper thread.
-                autoBlurController.onClassification(classification)
+                autoBlurController.onClassification(gantman, falconsaiScore)
                 val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
-                val strongText = "%.3f".format(classification.strongConfidence)
-                val sexyText = "%.3f".format(classification.sexyConfidence)
+                val strongText = "%.3f".format(gantman.strongConfidence)
+                val sexyText = "%.3f".format(gantman.sexyConfidence)
+                val falconsaiText = "%.3f".format(falconsaiScore)
                 val mode = BlurModeScheduler.currentMode().label
                 Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, $peekTag" +
-                    "explicit=$confidenceText (strong=$strongText, sexy=$sexyText), ${elapsedMs}ms, " +
-                    "$blurState, mode=$mode")
+                    "gantman(strong=$strongText, sexy=$sexyText) falconsai=$falconsaiText, " +
+                    "${elapsedMs}ms, $blurState, mode=$mode")
                 CaptureLog.record(
                     "captured ($peekTag" +
-                        "strong=$strongText, sexy=$sexyText, ${elapsedMs}ms) [$blurState, $mode]"
+                        "strong=$strongText, sexy=$sexyText, falconsai=$falconsaiText, " +
+                        "${elapsedMs}ms) [$blurState, $mode]"
                 )
             }
         }

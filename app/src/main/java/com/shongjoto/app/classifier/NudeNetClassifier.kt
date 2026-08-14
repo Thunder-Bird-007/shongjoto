@@ -14,12 +14,15 @@ import java.nio.channels.FileChannel
 /**
  * Wraps notAI-tech/NudeNet's bundled YOLOv8n-based detector (320n.onnx from the `nudenet` PyPI
  * package, AGPL-3.0), converted ONNX -> TFLite via onnx2tf — bundled for A/B comparison against
- * [ExplicitContentClassifier] and [FalconsaiClassifier], never as a live-blur replacement (see
- * those classes' docs for why calibration-only). Structurally different from the other two: this
- * is a region detector with 18 body-part classes (each with an EXPOSED/COVERED variant), not a
- * single explicit/safe classifier — [classify] collapses that down to one score by taking the max
- * confidence across the classes that actually indicate exposed explicit content, ignoring box
- * locations entirely (irrelevant to a single frame-level comparison score).
+ * [ExplicitContentClassifier] (GantMan) and [FalconsaiClassifier], calibration-only for now.
+ * Unlike Falconsai, this hasn't (yet) earned a place in the live ensemble — it hasn't been
+ * checked against real CalibrationLog data the way Falconsai was before joining
+ * [com.shongjoto.app.capture.AutoBlurController]; do that first if this looks like a good
+ * candidate too. Structurally different from the other two: this is a region detector with 18
+ * body-part classes (each with an EXPOSED/COVERED variant), not a single explicit/safe
+ * classifier — [classify] collapses that down to one score by taking the max confidence across
+ * the classes that actually indicate exposed explicit content, ignoring box locations entirely
+ * (irrelevant to a single frame-level comparison score).
  */
 class NudeNetClassifier(context: Context) {
 

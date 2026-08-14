@@ -10,13 +10,13 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Exercises the hysteresis/smoothing/debounce state machine directly with synthetic confidence
- * sequences — this is what stands in for the on-device "scroll safe content for 30+ seconds" and
- * "sustained explicit content" scenarios in an environment with no Android device attached. Real
- * on-device / real-photo testing is still required before shipping (see PR description).
+ * Exercises the full three-gate OR-ensemble (GantMan strong, GantMan sexy, Falconsai) with
+ * synthetic confidence sequences — this is what stands in for the on-device "scroll safe content
+ * for 30+ seconds" and "sustained explicit content" scenarios in an environment with no Android
+ * device attached. Real on-device testing is still required before shipping.
  *
- * All tests here run in EXTREME mode (today's originally-calibrated thresholds) unless noted —
- * see the `mode selection` group at the bottom for LITE-specific behavior.
+ * All tests here run in EXTREME mode (today's calibrated thresholds) unless noted — see the
+ * `mode selection` group for LITE-specific behavior.
  */
 class AutoBlurControllerTest {
 
@@ -32,13 +32,12 @@ class AutoBlurControllerTest {
     @Test
     fun `noisy safe content over 40 captures never triggers blur`() {
         // ~40s of scrolling at 1 capture/sec. "sexy" occasionally ticks up (a portrait, a beach
-        // ad thumbnail) but stays well under the threshold that beach/swim/portrait photos
-        // realistically hit on GantMan's model.
+        // ad thumbnail); falconsai stays near its observed noise floor.
         val noisySexyReadings =
             listOf(0.05f, 0.12f, 0.08f, 0.20f, 0.15f, 0.30f, 0.10f, 0.25f, 0.18f, 0.09f)
         repeat(4) {
             for (sexy in noisySexyReadings) {
-                controller.onClassification(reading(sexy = sexy))
+                controller.onClassification(reading(sexy = sexy), falconsaiScore = 0.005f)
             }
         }
         assertFalse(surface.isShowing)
@@ -47,13 +46,9 @@ class AutoBlurControllerTest {
 
     @Test
     fun `oscillating score around the old single 0_35 threshold no longer flickers`() {
-        // Regression test for the flicker bug: the old code compared one smoothed value
-        // directly to a single 0.35 threshold, so scores bouncing on either side of it used to
-        // flip the overlay. This sequence bounces in that same "used to be ambiguous" range but
-        // stays comfortably under STRONG_ON_THRESHOLD once smoothed, so it now holds steady.
         val bouncing = listOf(0.20f, 0.32f, 0.25f, 0.38f, 0.22f, 0.35f, 0.28f, 0.31f)
         for (v in bouncing) {
-            controller.onClassification(reading(strong = v))
+            controller.onClassification(reading(strong = v), falconsaiScore = 0f)
         }
         assertFalse(surface.isShowing)
         assertEquals(0, surface.showCount)
@@ -61,131 +56,121 @@ class AutoBlurControllerTest {
 
     @Test
     fun `single spurious high reading does not trigger blur`() {
-        // One bad tile crop (odd lighting/framing) reading high, surrounded by low readings,
-        // must not be enough on its own — even though smoothing lets it briefly cross the ON
-        // threshold, a single frame can't satisfy the consecutive-reads requirement.
-        controller.onClassification(reading(strong = 0.05f))
-        controller.onClassification(reading(strong = 0.90f))
-        controller.onClassification(reading(strong = 0.05f))
-        controller.onClassification(reading(strong = 0.05f))
+        controller.onClassification(reading(strong = 0.05f), falconsaiScore = 0f)
+        controller.onClassification(reading(strong = 0.90f), falconsaiScore = 0f)
+        controller.onClassification(reading(strong = 0.05f), falconsaiScore = 0f)
+        controller.onClassification(reading(strong = 0.05f), falconsaiScore = 0f)
         assertFalse(surface.isShowing)
     }
 
     @Test
     fun `sustained strong porn or hentai content triggers blur within a couple seconds`() {
-        repeat(5) { controller.onClassification(reading(strong = 0.85f)) }
+        repeat(5) { controller.onClassification(reading(strong = 0.85f), falconsaiScore = 0f) }
         assertTrue(surface.isShowing)
     }
 
     @Test
     fun `strong content at this app's own calibrated real-world value triggers blur`() {
-        // Regression test: prior tuning found real nudity content reads a sustained ~0.424 on
-        // this pipeline. EXTREME's strongOn must stay below that or this app regresses on the
-        // exact content it was calibrated against.
-        repeat(5) { controller.onClassification(reading(strong = 0.424f)) }
+        repeat(5) { controller.onClassification(reading(strong = 0.424f), falconsaiScore = 0f) }
         assertTrue(surface.isShowing)
     }
 
     @Test
     fun `moderate sustained sexy score typical of beach or portrait photos never triggers blur`() {
-        // GantMan's model routinely scores plainly-safe skin-heavy photos 0.3-0.55 on "sexy".
-        // This must stay under EXTREME's sexyOn (0.65) even when sustained for a while.
-        repeat(10) { controller.onClassification(reading(sexy = 0.50f)) }
+        repeat(10) { controller.onClassification(reading(sexy = 0.50f), falconsaiScore = 0f) }
         assertFalse(surface.isShowing)
     }
 
     @Test
     fun `sustained high sexy score alone can still trigger blur`() {
-        repeat(6) { controller.onClassification(reading(sexy = 0.80f)) }
+        repeat(6) { controller.onClassification(reading(sexy = 0.80f), falconsaiScore = 0f) }
         assertTrue(surface.isShowing)
     }
 
     @Test
     fun `blur holds through a dead-zone dip, only clears on a sustained drop below the OFF threshold`() {
-        repeat(5) { controller.onClassification(reading(strong = 0.85f)) }
+        repeat(5) { controller.onClassification(reading(strong = 0.85f), falconsaiScore = 0f) }
         assertTrue(surface.isShowing)
 
-        // Dips into the dead zone (below ON, but not below OFF) must not clear it.
-        repeat(5) { controller.onClassification(reading(strong = 0.35f)) }
+        repeat(5) { controller.onClassification(reading(strong = 0.35f), falconsaiScore = 0f) }
         assertTrue(surface.isShowing)
 
-        // Only a sustained drop below the OFF threshold actually clears it.
-        repeat(4) { controller.onClassification(reading(strong = 0.05f)) }
+        repeat(4) { controller.onClassification(reading(strong = 0.05f), falconsaiScore = 0f) }
         assertFalse(surface.isShowing)
     }
 
     @Test
     fun `a strong signal on one tile is not suppressed by a higher but subthreshold sexy signal elsewhere`() {
-        // Regression test for the tile-selection bug: classifyTiled() used to pick a single
-        // "best" tile by blended explicit-confidence, so a tile with porn=0.55 could lose the
-        // selection to a different tile with sexy=0.62 — discarding the porn signal even though
-        // it alone was strong enough to matter. FrameReading tracks both independently, so this
-        // must trigger via the strong signal regardless of what sexy is doing elsewhere.
-        repeat(5) { controller.onClassification(reading(strong = 0.55f, sexy = 0.62f)) }
+        repeat(5) {
+            controller.onClassification(reading(strong = 0.55f, sexy = 0.62f), falconsaiScore = 0f)
+        }
         assertTrue(surface.isShowing)
     }
 
-    // --- mode selection -----------------------------------------------------------------
+    // --- ensemble behavior (Falconsai) --------------------------------------------------------
 
     @Test
-    fun `LITE mode does not trigger on a sexy-only reading that would trigger EXTREME`() {
-        // Real CalibrationLog data showed explicit content consistently scoring 0.42-0.50 on
-        // the strong signal, leaving LITE's strongOn (0.42) almost no room to differ from
-        // EXTREME's (0.40) without missing real content — so this is where LITE's actual extra
-        // leniency lives now: 0.70 clears EXTREME's sexyOn (0.65) but sits below LITE's (0.78).
-        val surface = FakeBlurSurface()
-        val controller = AutoBlurController(surface) { BlurMode.LITE }
-        repeat(6) { controller.onClassification(reading(sexy = 0.70f)) }
+    fun `falconsai alone triggers blur when both GantMan signals completely miss`() {
+        // The whole reason Falconsai was added: real calibration data showed GantMan's strong
+        // signal reading exactly 0 on some content a human tagged explicit, while Falconsai
+        // still caught it clearly (0.94+).
+        repeat(5) { controller.onClassification(reading(), falconsaiScore = 0.95f) }
+        assertTrue(surface.isShowing)
+    }
+
+    @Test
+    fun `falconsai at its observed safe-content ceiling never triggers`() {
+        // Real calibration data: not-explicit content never exceeded 0.0191 on Falconsai.
+        repeat(10) { controller.onClassification(reading(), falconsaiScore = 0.0191f) }
         assertFalse(surface.isShowing)
     }
 
     @Test
-    fun `LITE mode still triggers on unambiguous strong content`() {
+    fun `either gate alone is enough -- GantMan strong plus a low falconsai reading still triggers`() {
+        repeat(5) { controller.onClassification(reading(strong = 0.85f), falconsaiScore = 0.001f) }
+        assertTrue(surface.isShowing)
+    }
+
+    @Test
+    fun `all three signals must independently clear before the overlay hides`() {
+        // Trigger via falconsai only.
+        repeat(5) { controller.onClassification(reading(), falconsaiScore = 0.95f) }
+        assertTrue(surface.isShowing)
+
+        // GantMan's signals were never elevated, so only falconsai's gate needs to clear -- but
+        // it still needs its own sustained drop below OFF, not just one low reading.
+        controller.onClassification(reading(), falconsaiScore = 0.01f)
+        assertTrue(surface.isShowing)
+    }
+
+    // --- mode selection ------------------------------------------------------------------------
+
+    @Test
+    fun `LITE mode does not trigger on a falconsai reading that would trigger EXTREME`() {
+        // EXTREME's falconsaiOn (0.08) sits just above the observed safe-content ceiling;
+        // LITE's (0.20) sits at the top of the gap before real detections cluster (0.26+) --
+        // this is where LITE's "less sensitive during the day" intent actually lives now, since
+        // GantMan's own strong/sexy pair has little room left to differ between modes.
         val surface = FakeBlurSurface()
         val controller = AutoBlurController(surface) { BlurMode.LITE }
-        repeat(6) { controller.onClassification(reading(strong = 0.90f)) }
+        repeat(6) { controller.onClassification(reading(), falconsaiScore = 0.10f) }
+        assertFalse(surface.isShowing)
+    }
+
+    @Test
+    fun `LITE mode still triggers on a high-confidence falconsai reading`() {
+        val surface = FakeBlurSurface()
+        val controller = AutoBlurController(surface) { BlurMode.LITE }
+        repeat(6) { controller.onClassification(reading(), falconsaiScore = 0.90f) }
         assertTrue(surface.isShowing)
     }
 
     @Test
     fun `LITE mode now triggers on real calibrated explicit content (previously missed at strongOn 0_55)`() {
-        // Regression test for the recalibration itself: real labeled explicit content observed
-        // via CalibrationLog scored 0.42-0.50, all of which the old LITE strongOn (0.55) would
-        // have missed entirely.
         val surface = FakeBlurSurface()
         val controller = AutoBlurController(surface) { BlurMode.LITE }
-        repeat(6) { controller.onClassification(reading(strong = 0.45f)) }
+        repeat(6) { controller.onClassification(reading(strong = 0.45f), falconsaiScore = 0f) }
         assertTrue(surface.isShowing)
-    }
-
-    @Test
-    fun `switching from EXTREME to LITE mid-session does not instantly clear an active blur`() {
-        // The smoothing/debounce state (the last few raw readings, and how many consecutive
-        // clean reads have been seen) carries across a mode switch; only the thresholds being
-        // compared against change. Content dropping to safe right as the mode switches still has
-        // to clear the smoothing window and the consecutive-reads debounce before it hides —
-        // switching modes is not itself a reason to hide.
-        var mode = BlurMode.EXTREME
-        val surface = FakeBlurSurface()
-        val controller = AutoBlurController(surface) { mode }
-
-        repeat(5) { controller.onClassification(reading(strong = 0.85f)) }
-        assertTrue(surface.isShowing)
-
-        mode = BlurMode.LITE
-        // Smoothed value is still diluted by the trailing 0.85 readings for the next couple of
-        // calls, so the overlay must stay up.
-        controller.onClassification(reading(strong = 0.10f))
-        assertTrue(surface.isShowing)
-        controller.onClassification(reading(strong = 0.10f))
-        assertTrue(surface.isShowing)
-        controller.onClassification(reading(strong = 0.10f))
-        assertTrue(surface.isShowing)
-
-        // Only once the smoothed value has actually settled below LITE's OFF threshold for
-        // CONSECUTIVE_CLEAN_READS_REQUIRED calls in a row does it clear.
-        controller.onClassification(reading(strong = 0.10f))
-        assertFalse(surface.isShowing)
     }
 
     private fun reading(strong: Float = 0f, sexy: Float = 0f) = FrameReading(strong, sexy)

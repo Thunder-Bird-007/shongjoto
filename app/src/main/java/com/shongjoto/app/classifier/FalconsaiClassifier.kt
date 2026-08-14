@@ -13,14 +13,20 @@ import kotlin.math.exp
 
 /**
  * Wraps Falconsai/nsfw_image_detection (github.com/huggingface.co/Falconsai/nsfw_image_detection,
- * Apache-2.0), a ViT-base classifier fine-tuned for binary nsfw/normal classification — bundled
- * for A/B comparison against [ExplicitContentClassifier] (GantMan's 5-class MobileNetV2 model),
- * never as a replacement. Only used from calibration taps
- * ([com.shongjoto.app.capture.ScreenCaptureService.requestCalibrationCapture]), never the
- * periodic live-blur loop: a 12-layer transformer at 224x224 is far more expensive per inference
- * than GantMan's MobileNetV2, and unlike that one this isn't tiled (single full-frame pass only)
- * — running this on every ~1s capture, let alone tiled, would be a real battery/latency cost for
- * an unproven model.
+ * Apache-2.0), a ViT-base classifier fine-tuned for binary nsfw/normal classification. Now part
+ * of the live ensemble alongside [ExplicitContentClassifier] (GantMan) — see
+ * [com.shongjoto.app.capture.AutoBlurController]'s doc for why (real CalibrationLog data showed
+ * this never came close to GantMan's strong-signal false positives) and its real cost (on the
+ * same data, this alone misses roughly 60% of what GantMan's tiled signal already catches, so
+ * it's ensembled in as an additional catch, never a replacement).
+ *
+ * Deliberately **not tiled**, unlike GantMan's classifier: a 12-layer transformer at 224x224 is
+ * far more expensive per inference than MobileNetV2, and running it 7x per capture (GantMan's
+ * tile count) every ~1s is an unverified battery/latency risk on real hardware that hasn't been
+ * tested. This is a real, known tradeoff — small explicit regions within an otherwise busy frame
+ * (e.g. a feed thumbnail) may be missed by this signal specifically, the same failure mode
+ * GantMan's tiling was added to fix. If real-world testing shows that gap matters in practice,
+ * tiling this too (and measuring the actual on-device cost) is the next thing to try.
  *
  * Converted PyTorch -> ONNX -> TF SavedModel (onnx2tf) -> TFLite with dynamic-range int8
  * weight quantization (activations stay float, no representative dataset needed) — the plain
