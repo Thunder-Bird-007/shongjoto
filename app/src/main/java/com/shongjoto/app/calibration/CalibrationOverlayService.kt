@@ -4,7 +4,9 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -31,6 +33,7 @@ class CalibrationOverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var params: WindowManager.LayoutParams
+    private val handler = Handler(Looper.getMainLooper())
     private var rootView: LinearLayout? = null
     private var panel: LinearLayout? = null
     private var expanded = false
@@ -43,6 +46,7 @@ class CalibrationOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         rootView?.let { runCatching { windowManager.removeView(it) } }
         rootView = null
         CalibrationOverlayState.isRunning.value = false
@@ -183,6 +187,14 @@ class CalibrationOverlayService : Service() {
         CalibrationLabel.FALSE_NEGATIVE -> Color.rgb(120, 40, 160)
     }
 
+    /**
+     * Hides this entire overlay (bubble + panel, if expanded) before requesting a capture, and
+     * restores it once the result comes back — otherwise the screenshot being classified would
+     * include our own label buttons, which is exactly the bug this fixes (see commit history:
+     * an earlier version only called [collapse] synchronously, which doesn't wait for the
+     * compositor to actually stop drawing the panel before the screenshot is taken). Mirrors
+     * [com.shongjoto.app.overlay.BlurOverlayController]'s hide-before-capture pattern.
+     */
     private fun recordLabel(label: CalibrationLabel) {
         val service = ScreenCaptureService.instance
         if (service == null) {
@@ -190,18 +202,29 @@ class CalibrationOverlayService : Service() {
             collapse()
             return
         }
-        service.requestCalibrationCapture { reading, overlayWasShowing ->
-            CalibrationLog.record(applicationContext, label, reading, overlayWasShowing)
-            Toast.makeText(
-                this,
-                "Logged ${label.csvValue}: strong=%.2f sexy=%.2f".format(
-                    reading.strongConfidence,
-                    reading.sexyConfidence
-                ),
-                Toast.LENGTH_SHORT
-            ).show()
-        }
         collapse()
+        val container = rootView
+        container?.visibility = View.INVISIBLE
+        handler.postDelayed({
+            service.requestCalibrationCapture(
+                onResult = { reading, overlayWasShowing ->
+                    container?.visibility = View.VISIBLE
+                    CalibrationLog.record(applicationContext, label, reading, overlayWasShowing)
+                    Toast.makeText(
+                        this,
+                        "Logged ${label.csvValue}: strong=%.2f sexy=%.2f".format(
+                            reading.strongConfidence,
+                            reading.sexyConfidence
+                        ),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFailure = {
+                    container?.visibility = View.VISIBLE
+                    Toast.makeText(this, "Capture failed, not logged", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }, CAPTURE_SETTLE_DELAY_MS)
     }
 
     private fun dp(value: Int): Int =
@@ -209,5 +232,10 @@ class CalibrationOverlayService : Service() {
 
     companion object {
         private const val DRAG_THRESHOLD_PX = 12
+
+        // Same reasoning/value as ScreenCaptureService.HIDE_SETTLE_DELAY_MS: give the
+        // compositor a couple of frames to actually stop drawing this overlay before the
+        // screenshot is taken.
+        private const val CAPTURE_SETTLE_DELAY_MS = 50L
     }
 }

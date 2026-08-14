@@ -78,7 +78,10 @@ class ScreenCaptureService : AccessibilityService() {
      * taken while blurred would just photograph our own noise texture, and calibration needs the
      * real content underneath to pair with the human's label regardless of current blur state.
      */
-    fun requestCalibrationCapture(onResult: (reading: FrameReading, overlayWasShowing: Boolean) -> Unit) {
+    fun requestCalibrationCapture(
+        onResult: (reading: FrameReading, overlayWasShowing: Boolean) -> Unit,
+        onFailure: () -> Unit = {}
+    ) {
         val wasBlurredBeforeCapture = overlayController.isShowing
         val proceed = {
             takeScreenshot(
@@ -89,7 +92,7 @@ class ScreenCaptureService : AccessibilityService() {
                         if (wasBlurredBeforeCapture) {
                             overlayController.show(touchable = false)
                         }
-                        classifyForCalibration(result, wasBlurredBeforeCapture, onResult)
+                        classifyForCalibration(result, wasBlurredBeforeCapture, onResult, onFailure)
                     }
 
                     override fun onFailure(errorCode: Int) {
@@ -97,6 +100,7 @@ class ScreenCaptureService : AccessibilityService() {
                             overlayController.show(touchable = false)
                         }
                         Log.w(TAG, "Calibration capture failed, errorCode=$errorCode")
+                        onFailure()
                     }
                 }
             )
@@ -112,10 +116,12 @@ class ScreenCaptureService : AccessibilityService() {
     private fun classifyForCalibration(
         result: ScreenshotResult,
         wasBlurredBeforeCapture: Boolean,
-        onResult: (FrameReading, Boolean) -> Unit
+        onResult: (FrameReading, Boolean) -> Unit,
+        onFailure: () -> Unit
     ) {
         val bitmap = hardwareResultToBitmap(result) ?: run {
             Log.w(TAG, "Could not wrap calibration screenshot HardwareBuffer as a Bitmap")
+            onFailure()
             return
         }
         classificationExecutor.execute {
