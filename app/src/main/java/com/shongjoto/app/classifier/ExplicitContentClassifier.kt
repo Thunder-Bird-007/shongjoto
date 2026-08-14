@@ -54,7 +54,13 @@ class ExplicitContentClassifier(context: Context) {
         val output = Array(1) { FloatArray(LABELS.size) }
         interpreter.run(preprocess(bitmap), output)
 
-        val scores = LABELS.zip(output[0].toList()).toMap()
+        // Sanitize at the source: Kotlin's maxOf (used by strongConfidence/explicitConfidence)
+        // propagates NaN rather than ignoring it, unlike a raw `>` comparison — a single
+        // non-finite class score (e.g. from a degenerate/solid-color input) would otherwise
+        // poison every derived value. Treat it as "no signal" instead.
+        val scores = LABELS.zip(output[0].toList()) { label, score ->
+            label to if (score.isFinite()) score else 0f
+        }.toMap()
         val explicitConfidence = EXPLICIT_LABELS.maxOf { label -> scores.getValue(label) }
         return ClassificationResult(scores, explicitConfidence)
     }

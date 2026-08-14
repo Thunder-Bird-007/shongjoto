@@ -31,7 +31,10 @@ class NudeNetClassifier(context: Context) {
     /** Max confidence, anywhere in the frame, across the classes indicating exposed
      * genitalia/anus/breast/buttocks. Doesn't include MALE_BREAST_EXPOSED, BELLY_EXPOSED,
      * ARMPITS_EXPOSED, or FEET_EXPOSED — those are common in ordinary shirtless/beach/gym photos
-     * and aren't a meaningful explicit-content signal on their own. */
+     * and aren't a meaningful explicit-content signal on their own. Always finite by
+     * construction: [best] starts at 0f and is only ever replaced via `>`, which a NaN value
+     * (e.g. from a degenerate/solid-color input) can never satisfy — so a NaN anchor is silently
+     * ignored rather than propagated. */
     fun classify(bitmap: Bitmap): Float {
         val input = preprocess(bitmap)
         val output = Array(1) { Array(NUM_ROWS) { FloatArray(NUM_ANCHORS) } }

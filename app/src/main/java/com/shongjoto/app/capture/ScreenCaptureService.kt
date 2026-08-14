@@ -18,20 +18,28 @@ import com.shongjoto.app.mode.BlurModeScheduler
 import com.shongjoto.app.overlay.BlurOverlayController
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Periodically calls takeScreenshot() (API 30+) roughly once per second while the
- * accessibility service is enabled, then classifies each frame off the main thread with BOTH
- * live models — [ExplicitContentClassifier] (GantMan, tiled) and [FalconsaiClassifier]
- * (single full-frame pass) — feeding both into [AutoBlurController]'s OR-ensemble. Capture
- * scheduling never waits on classification — the ~1s cadence is independent of how long
- * inference takes. [AutoBlurController] turns each pair of readings into a show/hide decision on
- * its own [BlurOverlayController] instance (separate from the manual debug toggle's). Results
- * also log through [CaptureLog], shown on the main screen, for sanity-checking.
+ * accessibility service is enabled, then classifies each frame off the main thread with
+ * [ExplicitContentClassifier] (GantMan, tiled). Capture scheduling never waits on
+ * classification — the ~1s cadence is independent of how long inference takes, but a new
+ * classification is only ever *submitted* if the previous one has finished (see
+ * [classificationInFlight]): otherwise a slow or stuck classification would let captured bitmaps
+ * queue up unboundedly on the single background thread, eventually OOMing the process. This is
+ * exactly what happened on real hardware when [FalconsaiClassifier] briefly ran in this loop
+ * (reverted — see its own doc) — that classification, plus a missing try/catch around this whole
+ * block, crashed the app while browsing YouTube and left the overlay stuck shown. Both are fixed
+ * here: bounded in-flight classification, and every classification wrapped so a single bad frame
+ * can never crash the process again.
  *
- * [NudeNetClassifier] stays comparison-only, loaded lazily and only ever touched from
- * [requestCalibrationCapture] — see its own doc for why it hasn't earned a place in the live
- * ensemble (yet).
+ * [AutoBlurController] turns each reading into a show/hide decision on its own
+ * [BlurOverlayController] instance (separate from the manual debug toggle's). Results also log
+ * through [CaptureLog], shown on the main screen, for sanity-checking.
+ *
+ * [FalconsaiClassifier] and [NudeNetClassifier] are comparison-only, loaded lazily and only ever
+ * touched from [requestCalibrationCapture] — never this periodic loop.
  *
  * Also exposes [requestCalibrationCapture] for
  * [com.shongjoto.app.calibration.CalibrationOverlayService] to trigger an immediate, one-off
@@ -45,17 +53,20 @@ class ScreenCaptureService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val captureRunnable = Runnable { captureFrame() }
     private lateinit var classifier: ExplicitContentClassifier
-    private lateinit var falconsaiClassifier: FalconsaiClassifier
-    // Comparison-only — see NudeNetClassifier's doc for why it never enters the live loop.
+    // Comparison-only, loaded lazily — see their own docs for why they never enter this loop.
+    private var falconsaiClassifier: FalconsaiClassifier? = null
     private var nudenetClassifier: NudeNetClassifier? = null
     private lateinit var classificationExecutor: ExecutorService
     private lateinit var overlayController: BlurOverlayController
     private lateinit var autoBlurController: AutoBlurController
 
+    /** Guards against submitting a new periodic classification while one is still running —
+     * see the class doc for why this is load-bearing, not just an optimization. */
+    private val classificationInFlight = AtomicBoolean(false)
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         classifier = ExplicitContentClassifier(this)
-        falconsaiClassifier = FalconsaiClassifier(this)
         classificationExecutor = Executors.newSingleThreadExecutor()
         overlayController = BlurOverlayController(this)
         autoBlurController = AutoBlurController(overlayController)
@@ -77,7 +88,7 @@ class ScreenCaptureService : AccessibilityService() {
         handler.removeCallbacks(captureRunnable)
         classificationExecutor.shutdownNow()
         classifier.close()
-        falconsaiClassifier.close()
+        falconsaiClassifier?.close()
         nudenetClassifier?.close()
         overlayController.hide()
         Log.d(TAG, "Service unbound, capture loop stopped")
@@ -95,8 +106,10 @@ class ScreenCaptureService : AccessibilityService() {
      * [FalconsaiClassifier], and [NudeNetClassifier] (both comparison-only) — against the exact
      * same captured bitmap, so a single human label can be compared against all three fairly:
      * same frame, same moment, no risk of content changing between separate captures per model.
-     * The two comparison models are lazily constructed here (not in onServiceConnected) since
-     * they're only ever needed when calibration is actually in use.
+     * Both comparison models are lazily constructed here (not in onServiceConnected) since
+     * they're only ever needed when calibration is actually in use. This is user-triggered (one
+     * tap, one capture), not a continuous loop, so it doesn't need the same in-flight guard as
+     * the periodic loop — but classification here is still wrapped defensively (see [classifyForCalibration]).
      */
     fun requestCalibrationCapture(
         onResult: (result: CalibrationComparisonResult, overlayWasShowing: Boolean) -> Unit,
@@ -145,15 +158,25 @@ class ScreenCaptureService : AccessibilityService() {
             return
         }
         classificationExecutor.execute {
-            val nudenet = nudenetClassifier ?: NudeNetClassifier(this).also { nudenetClassifier = it }
+            try {
+                val falconsai = falconsaiClassifier ?: FalconsaiClassifier(this).also { falconsaiClassifier = it }
+                val nudenet = nudenetClassifier ?: NudeNetClassifier(this).also { nudenetClassifier = it }
 
-            val gantman = classifier.classifyTiled(bitmap)
-            val falconsaiScore = falconsaiClassifier.classify(bitmap)
-            val nudenetScore = nudenet.classify(bitmap)
-            bitmap.recycle()
+                val gantman = classifier.classifyTiled(bitmap)
+                val falconsaiScore = falconsai.classify(bitmap)
+                val nudenetScore = nudenet.classify(bitmap)
 
-            val combined = CalibrationComparisonResult(gantman, falconsaiScore, nudenetScore)
-            handler.post { onResult(combined, wasBlurredBeforeCapture) }
+                val combined = CalibrationComparisonResult(gantman, falconsaiScore, nudenetScore)
+                handler.post { onResult(combined, wasBlurredBeforeCapture) }
+            } catch (e: Exception) {
+                // Never let a bad frame (or a model choking on unusual input) crash the process —
+                // this is exactly the class of bug that caused a real crash + stuck overlay on
+                // real hardware. Fail this one tap gracefully instead.
+                Log.e(TAG, "Calibration classification failed", e)
+                handler.post { onFailure() }
+            } finally {
+                bitmap.recycle()
+            }
         }
     }
 
@@ -212,7 +235,14 @@ class ScreenCaptureService : AccessibilityService() {
 
     /**
      * Converts the hardware-backed screenshot to a software Bitmap and classifies it off the
-     * main thread, then logs the result back on the main thread.
+     * main thread, then logs the result back on the main thread. Only GantMan runs here — see
+     * the class doc for why Falconsai doesn't.
+     *
+     * If a previous classification is still running (see [classificationInFlight]), this frame
+     * is dropped rather than queued: capture scheduling is intentionally decoupled from
+     * classification latency (see [requestScreenshot]), but that only holds up if classification
+     * is bounded — an unbounded queue of full-screen bitmaps behind a slow or stuck classifier is
+     * exactly what caused a real OOM crash on real hardware.
      */
     private fun classifyAndLog(result: ScreenshotResult, wasBlurredBeforeCapture: Boolean) {
         val softwareBitmap = hardwareResultToBitmap(result)
@@ -222,29 +252,40 @@ class ScreenCaptureService : AccessibilityService() {
             return
         }
 
-        classificationExecutor.execute {
-            val startMs = SystemClock.elapsedRealtime()
-            val gantman = classifier.classifyTiled(softwareBitmap)
-            val falconsaiScore = falconsaiClassifier.classify(softwareBitmap)
-            val elapsedMs = SystemClock.elapsedRealtime() - startMs
+        if (!classificationInFlight.compareAndSet(false, true)) {
             softwareBitmap.recycle()
-            val peekTag = if (wasBlurredBeforeCapture) "peek, " else ""
-            handler.post {
-                // show()/hide() go through WindowManager and must run on a Looper thread.
-                autoBlurController.onClassification(gantman, falconsaiScore)
-                val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
-                val strongText = "%.3f".format(gantman.strongConfidence)
-                val sexyText = "%.3f".format(gantman.sexyConfidence)
-                val falconsaiText = "%.3f".format(falconsaiScore)
-                val mode = BlurModeScheduler.currentMode().label
-                Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, $peekTag" +
-                    "gantman(strong=$strongText, sexy=$sexyText) falconsai=$falconsaiText, " +
-                    "${elapsedMs}ms, $blurState, mode=$mode")
-                CaptureLog.record(
-                    "captured ($peekTag" +
-                        "strong=$strongText, sexy=$sexyText, falconsai=$falconsaiText, " +
-                        "${elapsedMs}ms) [$blurState, $mode]"
-                )
+            Log.w(TAG, "Skipping frame, previous classification still running")
+            CaptureLog.record("skipped (classifier busy)")
+            return
+        }
+
+        classificationExecutor.execute {
+            try {
+                val startMs = SystemClock.elapsedRealtime()
+                val gantman = classifier.classifyTiled(softwareBitmap)
+                val elapsedMs = SystemClock.elapsedRealtime() - startMs
+                val peekTag = if (wasBlurredBeforeCapture) "peek, " else ""
+                handler.post {
+                    // show()/hide() go through WindowManager and must run on a Looper thread.
+                    autoBlurController.onClassification(gantman, falconsaiScore = 0f)
+                    val blurState = if (overlayController.isShowing) "BLUR ON" else "blur off"
+                    val strongText = "%.3f".format(gantman.strongConfidence)
+                    val sexyText = "%.3f".format(gantman.sexyConfidence)
+                    val mode = BlurModeScheduler.currentMode().label
+                    Log.d(TAG, "Frame captured at ${System.currentTimeMillis()}, $peekTag" +
+                        "strong=$strongText, sexy=$sexyText, ${elapsedMs}ms, $blurState, mode=$mode")
+                    CaptureLog.record(
+                        "captured ($peekTag" +
+                            "strong=$strongText, sexy=$sexyText, ${elapsedMs}ms) [$blurState, $mode]"
+                    )
+                }
+            } catch (e: Exception) {
+                // Never let a bad frame crash the process — see the class doc.
+                Log.e(TAG, "Classification failed", e)
+                handler.post { CaptureLog.record("classify failed (${e.javaClass.simpleName})") }
+            } finally {
+                softwareBitmap.recycle()
+                classificationInFlight.set(false)
             }
         }
     }

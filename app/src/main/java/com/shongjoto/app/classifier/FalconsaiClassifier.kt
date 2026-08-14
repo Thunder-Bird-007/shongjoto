@@ -42,12 +42,16 @@ class FalconsaiClassifier(context: Context) {
     private val interpreter: Interpreter = Interpreter(loadModelFile(context.assets))
 
     /** Softmax-normalized probability that the frame is "nsfw" (the model's own binary label,
-     * not to be confused with GantMan's per-class breakdown). Higher = more likely explicit. */
+     * not to be confused with GantMan's per-class breakdown). Higher = more likely explicit.
+     * Always finite: a degenerate input producing NaN/Infinity (e.g. from a solid-color region,
+     * plausible for a FLAG_SECURE-redacted video surface) is reported as 0f rather than
+     * propagated — see [SignalGate] for why that matters downstream. */
     fun classify(bitmap: Bitmap): Float {
         val output = Array(1) { FloatArray(NUM_CLASSES) }
         interpreter.run(preprocess(bitmap), output)
         val (normalLogit, nsfwLogit) = output[0][0] to output[0][1]
-        return softmaxNsfwProbability(normalLogit, nsfwLogit)
+        val score = softmaxNsfwProbability(normalLogit, nsfwLogit)
+        return if (score.isFinite()) score else 0f
     }
 
     fun close() {

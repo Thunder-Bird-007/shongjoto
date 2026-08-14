@@ -29,7 +29,13 @@ class SignalGate(
     private val recent = ArrayDeque<Float>()
 
     fun onReading(value: Float, onThreshold: Float, offThreshold: Float) {
-        recent.addLast(value)
+        // A NaN/Infinite reading (e.g. a model choking on degenerate input — an all-black
+        // FLAG_SECURE-redacted region, say) must never enter the smoothing window: NaN
+        // compares false against both >= and <, which would land in the dead-zone branch below
+        // and then, since NaN poisons every subsequent average it's part of, could hold whatever
+        // state this gate was already in indefinitely. Treat it as "no signal" instead.
+        val safeValue = if (value.isFinite()) value else 0f
+        recent.addLast(safeValue)
         while (recent.size > smoothingWindow) {
             recent.removeFirst()
         }
