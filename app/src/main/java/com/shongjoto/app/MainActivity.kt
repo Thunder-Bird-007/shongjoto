@@ -32,6 +32,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import com.shongjoto.app.calibration.CalibrationLog
+import com.shongjoto.app.calibration.CalibrationOverlayService
+import com.shongjoto.app.calibration.CalibrationOverlayState
 import com.shongjoto.app.capture.CaptureLog
 import com.shongjoto.app.capture.ScreenCaptureService
 import com.shongjoto.app.overlay.DebugOverlayState
@@ -187,6 +191,72 @@ private fun MainScreen(
                     }
                 }
             }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
+
+            CalibrationSection(hasOverlayPermission)
         }
+    }
+}
+
+@Composable
+private fun CalibrationSection(hasOverlayPermission: Boolean) {
+    val context = LocalContext.current
+    val calibrationRunning by CalibrationOverlayState.isRunning
+    val entries = CalibrationLog.entries
+
+    Text(
+        text = "Calibration overlay",
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(bottom = 4.dp)
+    )
+    Text(
+        text = "Floating button for manually labeling content while testing — Explicit / Not " +
+            "Explicit / False Positive / False Negative. Debug only.",
+        style = MaterialTheme.typography.bodySmall,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+
+    if (!hasOverlayPermission) {
+        Text(
+            text = "Needs the overlay permission above first.",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+    } else {
+        Switch(
+            checked = calibrationRunning,
+            onCheckedChange = { checked ->
+                val serviceIntent = Intent(context, CalibrationOverlayService::class.java)
+                if (checked) {
+                    context.startService(serviceIntent)
+                } else {
+                    context.stopService(serviceIntent)
+                }
+            }
+        )
+    }
+
+    Text(
+        text = "Entries recorded: ${entries.size}",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 12.dp, bottom = 8.dp)
+    )
+
+    Button(
+        onClick = {
+            val file = CalibrationLog.file(context)
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/csv"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share calibration data"))
+        },
+        enabled = entries.isNotEmpty()
+    ) {
+        Text("Share calibration data")
     }
 }

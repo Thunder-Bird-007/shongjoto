@@ -11,6 +11,7 @@ import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.shongjoto.app.classifier.ExplicitContentClassifier
+import com.shongjoto.app.classifier.FrameReading
 import com.shongjoto.app.overlay.BlurOverlayController
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -23,6 +24,13 @@ import java.util.concurrent.Executors
  * [AutoBlurController] turns each result into show/hide decisions on its own
  * [BlurOverlayController] instance (separate from the manual debug toggle's). Results also log
  * through [CaptureLog], shown on the main screen, for sanity-checking.
+ *
+ * Also exposes [requestCalibrationCapture] for
+ * [com.shongjoto.app.calibration.CalibrationOverlayService] to trigger an immediate, one-off
+ * capture+classify outside the periodic loop, since `takeScreenshot()` is only callable from
+ * within an [AccessibilityService]. [instance] is how that unrelated component finds this one —
+ * there's exactly one of this service on a device, so a static handle is simpler than plumbing a
+ * bind/connection through for a single low-stakes debug feature.
  */
 class ScreenCaptureService : AccessibilityService() {
 
@@ -39,6 +47,7 @@ class ScreenCaptureService : AccessibilityService() {
         classificationExecutor = Executors.newSingleThreadExecutor()
         overlayController = BlurOverlayController(this)
         autoBlurController = AutoBlurController(overlayController)
+        instance = this
         Log.d(TAG, "Service connected, starting capture loop")
         scheduleNextCapture(0L)
     }
@@ -52,12 +61,67 @@ class ScreenCaptureService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        instance = null
         handler.removeCallbacks(captureRunnable)
         classificationExecutor.shutdownNow()
         classifier.close()
         overlayController.hide()
         Log.d(TAG, "Service unbound, capture loop stopped")
         return super.onUnbind(intent)
+    }
+
+    /**
+     * One-off capture+classify for calibration labeling, independent of the periodic loop's
+     * cadence and without disturbing it. Shares the same "hide our own overlay before shooting,
+     * restore immediately after" dance as the periodic loop for the same reason: a screenshot
+     * taken while blurred would just photograph our own noise texture, and calibration needs the
+     * real content underneath to pair with the human's label regardless of current blur state.
+     */
+    fun requestCalibrationCapture(onResult: (reading: FrameReading, overlayWasShowing: Boolean) -> Unit) {
+        val wasBlurredBeforeCapture = overlayController.isShowing
+        val proceed = {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                ContextCompat.getMainExecutor(this),
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        if (wasBlurredBeforeCapture) {
+                            overlayController.show(touchable = false)
+                        }
+                        classifyForCalibration(result, wasBlurredBeforeCapture, onResult)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        if (wasBlurredBeforeCapture) {
+                            overlayController.show(touchable = false)
+                        }
+                        Log.w(TAG, "Calibration capture failed, errorCode=$errorCode")
+                    }
+                }
+            )
+        }
+        if (wasBlurredBeforeCapture) {
+            overlayController.hide()
+            handler.postDelayed(proceed, HIDE_SETTLE_DELAY_MS)
+        } else {
+            proceed()
+        }
+    }
+
+    private fun classifyForCalibration(
+        result: ScreenshotResult,
+        wasBlurredBeforeCapture: Boolean,
+        onResult: (FrameReading, Boolean) -> Unit
+    ) {
+        val bitmap = hardwareResultToBitmap(result) ?: run {
+            Log.w(TAG, "Could not wrap calibration screenshot HardwareBuffer as a Bitmap")
+            return
+        }
+        classificationExecutor.execute {
+            val reading = classifier.classifyTiled(bitmap)
+            bitmap.recycle()
+            handler.post { onResult(reading, wasBlurredBeforeCapture) }
+        }
     }
 
     private fun scheduleNextCapture(delayMs: Long) {
@@ -118,11 +182,7 @@ class ScreenCaptureService : AccessibilityService() {
      * main thread, then logs the result back on the main thread.
      */
     private fun classifyAndLog(result: ScreenshotResult, wasBlurredBeforeCapture: Boolean) {
-        val hardwareBitmap = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
-        val softwareBitmap = hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
-        hardwareBitmap?.recycle()
-        result.hardwareBuffer.close()
-
+        val softwareBitmap = hardwareResultToBitmap(result)
         if (softwareBitmap == null) {
             Log.w(TAG, "Could not wrap screenshot HardwareBuffer as a Bitmap")
             CaptureLog.record("captured (classify failed)")
@@ -152,8 +212,23 @@ class ScreenCaptureService : AccessibilityService() {
         }
     }
 
+    /** Consumes (recycles/closes) the hardware buffer either way — caller must not touch [result]
+     * again after calling this. */
+    private fun hardwareResultToBitmap(result: ScreenshotResult): Bitmap? {
+        val hardwareBitmap = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+        val softwareBitmap = hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+        hardwareBitmap?.recycle()
+        result.hardwareBuffer.close()
+        return softwareBitmap
+    }
+
     companion object {
         private const val TAG = "ScreenCaptureService"
+
+        /** The single running instance, or null while the accessibility service is disabled.
+         * Set/cleared on the main thread from [onServiceConnected]/[onUnbind]. */
+        var instance: ScreenCaptureService? = null
+            private set
 
         // Tunables.
         private const val CAPTURE_INTERVAL_MS = 1000L
