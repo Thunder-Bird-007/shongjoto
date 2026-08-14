@@ -10,8 +10,10 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
+import com.shongjoto.app.classifier.CalibrationComparisonResult
 import com.shongjoto.app.classifier.ExplicitContentClassifier
-import com.shongjoto.app.classifier.FrameReading
+import com.shongjoto.app.classifier.FalconsaiClassifier
+import com.shongjoto.app.classifier.NudeNetClassifier
 import com.shongjoto.app.mode.BlurModeScheduler
 import com.shongjoto.app.overlay.BlurOverlayController
 import java.util.concurrent.ExecutorService
@@ -38,6 +40,10 @@ class ScreenCaptureService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val captureRunnable = Runnable { captureFrame() }
     private lateinit var classifier: ExplicitContentClassifier
+    // Comparison-only models, loaded lazily and only ever touched from requestCalibrationCapture
+    // — see FalconsaiClassifier/NudeNetClassifier docs for why they never enter the live loop.
+    private var falconsaiClassifier: FalconsaiClassifier? = null
+    private var nudenetClassifier: NudeNetClassifier? = null
     private lateinit var classificationExecutor: ExecutorService
     private lateinit var overlayController: BlurOverlayController
     private lateinit var autoBlurController: AutoBlurController
@@ -66,6 +72,8 @@ class ScreenCaptureService : AccessibilityService() {
         handler.removeCallbacks(captureRunnable)
         classificationExecutor.shutdownNow()
         classifier.close()
+        falconsaiClassifier?.close()
+        nudenetClassifier?.close()
         overlayController.hide()
         Log.d(TAG, "Service unbound, capture loop stopped")
         return super.onUnbind(intent)
@@ -77,9 +85,16 @@ class ScreenCaptureService : AccessibilityService() {
      * restore immediately after" dance as the periodic loop for the same reason: a screenshot
      * taken while blurred would just photograph our own noise texture, and calibration needs the
      * real content underneath to pair with the human's label regardless of current blur state.
+     *
+     * Runs all three bundled models — [ExplicitContentClassifier] (live/production),
+     * [FalconsaiClassifier], and [NudeNetClassifier] (both comparison-only) — against the exact
+     * same captured bitmap, so a single human label can be compared against all three fairly:
+     * same frame, same moment, no risk of content changing between separate captures per model.
+     * The two comparison models are lazily constructed here (not in onServiceConnected) since
+     * they're only ever needed when calibration is actually in use.
      */
     fun requestCalibrationCapture(
-        onResult: (reading: FrameReading, overlayWasShowing: Boolean) -> Unit,
+        onResult: (result: CalibrationComparisonResult, overlayWasShowing: Boolean) -> Unit,
         onFailure: () -> Unit = {}
     ) {
         val wasBlurredBeforeCapture = overlayController.isShowing
@@ -116,7 +131,7 @@ class ScreenCaptureService : AccessibilityService() {
     private fun classifyForCalibration(
         result: ScreenshotResult,
         wasBlurredBeforeCapture: Boolean,
-        onResult: (FrameReading, Boolean) -> Unit,
+        onResult: (CalibrationComparisonResult, Boolean) -> Unit,
         onFailure: () -> Unit
     ) {
         val bitmap = hardwareResultToBitmap(result) ?: run {
@@ -125,9 +140,16 @@ class ScreenCaptureService : AccessibilityService() {
             return
         }
         classificationExecutor.execute {
-            val reading = classifier.classifyTiled(bitmap)
+            val falconsai = falconsaiClassifier ?: FalconsaiClassifier(this).also { falconsaiClassifier = it }
+            val nudenet = nudenetClassifier ?: NudeNetClassifier(this).also { nudenetClassifier = it }
+
+            val gantman = classifier.classifyTiled(bitmap)
+            val falconsaiScore = falconsai.classify(bitmap)
+            val nudenetScore = nudenet.classify(bitmap)
             bitmap.recycle()
-            handler.post { onResult(reading, wasBlurredBeforeCapture) }
+
+            val combined = CalibrationComparisonResult(gantman, falconsaiScore, nudenetScore)
+            handler.post { onResult(combined, wasBlurredBeforeCapture) }
         }
     }
 

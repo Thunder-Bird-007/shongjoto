@@ -207,16 +207,18 @@ class CalibrationOverlayService : Service() {
         container?.visibility = View.INVISIBLE
         handler.postDelayed({
             service.requestCalibrationCapture(
-                onResult = { reading, overlayWasShowing ->
+                onResult = { result, overlayWasShowing ->
                     container?.visibility = View.VISIBLE
-                    CalibrationLog.record(applicationContext, label, reading, overlayWasShowing)
+                    CalibrationLog.record(applicationContext, label, result, overlayWasShowing)
                     Toast.makeText(
                         this,
-                        "Logged ${label.csvValue}: strong=%.2f sexy=%.2f".format(
-                            reading.strongConfidence,
-                            reading.sexyConfidence
+                        "Logged ${label.csvValue}: gantman(strong=%.2f sexy=%.2f) falconsai=%.2f nudenet=%.2f".format(
+                            result.gantman.strongConfidence,
+                            result.gantman.sexyConfidence,
+                            result.falconsaiScore,
+                            result.nudenetScore
                         ),
-                        Toast.LENGTH_SHORT
+                        Toast.LENGTH_LONG
                     ).show()
                 },
                 onFailure = {
